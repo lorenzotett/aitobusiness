@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#0d7a6b" />
+    <title>AITOBUSINESS</title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body>
+    <!-- overlay per drawer mobile -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <div class="app-shell">
+
+      <!-- ── SIDEBAR ── -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <a class="brand" href="/dashboard" data-link>
+            <span class="brand-mark">AB</span>
+            <div class="brand-text">
+              <strong>AITOBUSINESS</strong>
+              <small>CRM &amp; Partnership</small>
+            </div>
+          </a>
+          <button class="icon-btn sidebar-close-btn" id="sidebar-close" aria-label="Chiudi menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <nav class="nav" role="navigation" aria-label="Menu principale">
+
+          <a href="/dashboard" data-link data-nav="dashboard" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+              <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+            </svg>
+            <span class="nav-label">Dashboard</span>
+            <span class="nav-badge" data-nav-badge="dashboard"></span>
+          </a>
+
+          <a href="/contatti" data-link data-nav="contacts" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span class="nav-label">Contatti</span>
+            <span class="nav-badge" data-nav-badge="contacts"></span>
+          </a>
+
+          <a href="/pipeline" data-link data-nav="pipeline" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="4" height="18" rx="1"/><rect x="10" y="3" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="9" rx="1"/>
+            </svg>
+            <span class="nav-label">Pipeline</span>
+            <span class="nav-badge" data-nav-badge="pipeline"></span>
+          </a>
+
+          <a href="/offerte" data-link data-nav="offers" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>
+            </svg>
+            <span class="nav-label">Offerte</span>
+            <span class="nav-badge" data-nav-badge="offers"></span>
+          </a>
+
+          <a href="/analytics" data-link data-nav="analytics" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+              <line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/>
+            </svg>
+            <span class="nav-label">Analytics</span>
+            <span class="nav-badge" data-nav-badge="analytics"></span>
+          </a>
+
+          <a href="/suggerimenti-ai" data-link data-nav="suggestions" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            <span class="nav-label">AI Suggerimenti</span>
+            <span class="nav-badge" data-nav-badge="suggestions"></span>
+          </a>
+
+          <a href="/onboarding" data-link data-nav="upload" class="nav-item">
+            <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="nav-label">Onboarding</span>
+            <span class="nav-badge live" data-nav-badge="upload">Live</span>
+          </a>
+
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-focus-card">
+            <span class="eyebrow">Focus</span>
+            <strong id="sidebar-focus">Costruisci la pipeline.</strong>
+            <p id="sidebar-summary">Importa i contatti LinkedIn per iniziare.</p>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ── AREA CONTENUTO ── -->
+      <div class="content-area">
+        <header class="topbar" id="topbar">
+          <button class="icon-btn" id="sidebar-toggle" aria-label="Apri menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+          <a class="topbar-brand" href="/dashboard" data-link>AITOBUSINESS</a>
+          <div class="topbar-right">
+            <span class="topbar-badge" id="topbar-badge"></span>
+          </div>
+        </header>
+
+        <main class="main-content" id="main-content"></main>
+      </div>
+
+      <!-- ── PANNELLO ASSISTENTE ── -->
+      <aside class="assistant-panel" id="assistant-panel"></aside>
+
+    </div>
+
+    <!-- ── BOTTOM NAV MOBILE ── -->
+    <nav class="bottom-nav" role="navigation" aria-label="Navigazione">
+      <a href="/dashboard" data-link data-nav="dashboard" class="bottom-nav-item">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+        <span>Home</span>
+      </a>
+      <a href="/contatti" data-link data-nav="contacts" class="bottom-nav-item">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        <span>Contatti</span>
+      </a>
+      <a href="/pipeline" data-link data-nav="pipeline" class="bottom-nav-item">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="4" height="18" rx="1"/><rect x="10" y="3" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="9" rx="1"/>
+        </svg>
+        <span>Pipeline</span>
+      </a>
+      <a href="/offerte" data-link data-nav="offers" class="bottom-nav-item">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>
+        </svg>
+        <span>Offerte</span>
+      </a>
+      <a href="/suggerimenti-ai" data-link data-nav="suggestions" class="bottom-nav-item">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+        <span>AI</span>
+      </a>
+    </nav>
+
+    <script src="/public/app.js"></script>
+  </body>
+</html>

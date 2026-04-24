@@ -1,0 +1,68 @@
+[
+  {
+    "id": "c1",
+    "nome": "Marco Rinaldi",
+    "ruolo": "Head of Sales",
+    "azienda": "ScaleForge",
+    "localita": "Milano, IT",
+    "settore": "SaaS B2B",
+    "punteggioLead": 92,
+    "stato": "Follow-up call effettuata",
+    "ultimoContatto": "2026-04-20",
+    "tag": ["ICP", "SaaS"],
+    "intento": "Alta",
+    "sentiment": "Positivo",
+    "prossimaAzione": "Inviare proposta commerciale",
+    "insight": "Ha chiesto pricing e flusso operativo dopo una call positiva.",
+    "offerteProposteIds": ["offerta-aito-sprint", "offerta-aito-abbonamento"],
+    "offerteSottoscritteIds": [],
+    "timeline": [
+      { "id": "t1", "tipo": "outbound", "data": "2026-04-12", "testo": "Primo messaggio di apertura su LinkedIn." },
+      { "id": "t2", "tipo": "inbound", "data": "2026-04-15", "testo": "Richiesta di dettagli su conversione chat -> call." },
+      { "id": "t3", "tipo": "call", "data": "2026-04-20", "testo": "Call effettuata con interesse commerciale concreto." }
+    ]
+  },
+  {
+    "id": "c2",
+    "nome": "Giulia Conti",
+    "ruolo": "Founder",
+    "azienda": "Opero Studio",
+    "localita": "Roma, IT",
+    "settore": "Agenzia",
+    "punteggioLead": 78,
+    "stato": "Contattato",
+    "ultimoContatto": "2026-04-18",
+    "tag": ["Founder", "Agency"],
+    "intento": "Media",
+    "sentiment": "Curioso",
+    "prossimaAzione": "Inviare caso studio e proposta partnership",
+    "insight": "Profilo con doppio valore: potenziale cliente e potenziale partner.",
+    "offerteProposteIds": ["offerta-partner-outreach", "offerta-partner-training", "offerta-aito-abbonamento"],
+    "offerteSottoscritteIds": [],
+    "timeline": [
+      { "id": "t4", "tipo": "outbound", "data": "2026-04-10", "testo": "Messaggio di introduzione del prodotto." },
+      { "id": "t5", "tipo": "inbound", "data": "2026-04-14", "testo": "Richiesta di capire il fit per founder-led sales." }
+    ]
+  },
+  {
+    "id": "c3",
+    "nome": "Luca Bassi",
+    "ruolo": "Growth Manager",
+    "azienda": "Northpeak",
+    "localita": "Torino, IT",
+    "settore": "Tech",
+    "punteggioLead": 41,
+    "stato": "Da contattare",
+    "ultimoContatto": "2026-03-28",
+    "tag": ["Growth"],
+    "intento": "Bassa",
+    "sentiment": "Neutro",
+    "prossimaAzione": "Primo contatto",
+    "insight": "Lead in target lato cliente, ancora freddo.",
+    "offerteProposteIds": ["offerta-aito-sprint"],
+    "offerteSottoscritteIds": [],
+    "timeline": [
+      { "id": "t6", "tipo": "import", "data": "2026-03-28", "testo": "Importato da export LinkedIn." }
+    ]
+  }
+]

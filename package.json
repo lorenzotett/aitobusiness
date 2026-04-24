@@ -1,0 +1,9 @@
+{
+  "name": "aito-business-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency MVP prototype for Aito Business.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
