@@ -10,6 +10,18 @@ const cartellaDati = path.join(__dirname, "data");
 const fileContatti = path.join(cartellaDati, "contatti.json");
 const fileOfferte  = path.join(cartellaDati, "offerte.json");
 
+// Su Vercel il filesystem è read-only tranne /tmp
+const IS_VERCEL = !!process.env.VERCEL;
+function percorsoScrittura(nomeFile) {
+  if (!IS_VERCEL) return path.join(cartellaDati, nomeFile);
+  const tmp = path.join("/tmp", nomeFile);
+  if (!fs.existsSync(tmp)) {
+    const src = path.join(cartellaDati, nomeFile);
+    if (fs.existsSync(src)) fs.copyFileSync(src, tmp);
+  }
+  return tmp;
+}
+
 const STATI_PIPELINE = [
   "Non in target",
   "Da contattare",
@@ -147,33 +159,32 @@ const promptAi = {
 };
 
 function assicuraArchivioDati() {
-  if (!fs.existsSync(cartellaDati)) {
-    fs.mkdirSync(cartellaDati, { recursive: true });
-  }
-  if (!fs.existsSync(fileContatti)) {
-    fs.writeFileSync(fileContatti, JSON.stringify(CONTATTI_PREDEFINITI, null, 2));
-  }
-  if (!fs.existsSync(fileOfferte)) {
-    fs.writeFileSync(fileOfferte, JSON.stringify(OFFERTE_PREDEFINITE, null, 2));
+  if (!IS_VERCEL) {
+    if (!fs.existsSync(cartellaDati)) fs.mkdirSync(cartellaDati, { recursive: true });
+    if (!fs.existsSync(fileContatti)) fs.writeFileSync(fileContatti, JSON.stringify(CONTATTI_PREDEFINITI, null, 2));
+    if (!fs.existsSync(fileOfferte))  fs.writeFileSync(fileOfferte,  JSON.stringify(OFFERTE_PREDEFINITE,  null, 2));
   }
 }
 
 function leggiOfferte() {
-  assicuraArchivioDati();
-  return JSON.parse(fs.readFileSync(fileOfferte, "utf8"));
+  const p = percorsoScrittura("offerte.json");
+  if (!fs.existsSync(p)) return OFFERTE_PREDEFINITE;
+  return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
 function salvaOfferte(offerte) {
-  fs.writeFileSync(fileOfferte, JSON.stringify(offerte, null, 2));
+  fs.writeFileSync(percorsoScrittura("offerte.json"), JSON.stringify(offerte, null, 2));
 }
 
 function leggiContatti() {
   assicuraArchivioDati();
-  return JSON.parse(fs.readFileSync(fileContatti, "utf8"));
+  const p = IS_VERCEL ? percorsoScrittura("contatti.json") : fileContatti;
+  if (!fs.existsSync(p)) return CONTATTI_PREDEFINITI;
+  return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
 function salvaContatti(contatti) {
-  fs.writeFileSync(fileContatti, JSON.stringify(contatti, null, 2));
+  fs.writeFileSync(percorsoScrittura("contatti.json"), JSON.stringify(contatti, null, 2));
 }
 
 function classificaTipologiaContatto(contatto) {
@@ -653,7 +664,11 @@ const server = http.createServer(async (req, res) => {
   inviaJson(res, 404, { errore: "Rotta non trovata" });
 });
 
-server.listen(PORTA, () => {
+if (require.main === module) {
   assicuraArchivioDati();
-  console.log(`Aito Business in esecuzione su http://localhost:${PORTA}`);
-});
+  server.listen(PORTA, () => {
+    console.log(`Aito Business in esecuzione su http://localhost:${PORTA}`);
+  });
+}
+
+module.exports = server;
