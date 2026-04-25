@@ -8,6 +8,7 @@ const PORTA = process.env.PORT || 3000;
 const cartellaPubblica = path.join(__dirname, "public");
 const cartellaDati = path.join(__dirname, "data");
 const fileContatti = path.join(cartellaDati, "contatti.json");
+const fileOfferte  = path.join(cartellaDati, "offerte.json");
 
 const STATI_PIPELINE = [
   "Non in target",
@@ -149,10 +150,21 @@ function assicuraArchivioDati() {
   if (!fs.existsSync(cartellaDati)) {
     fs.mkdirSync(cartellaDati, { recursive: true });
   }
-
   if (!fs.existsSync(fileContatti)) {
     fs.writeFileSync(fileContatti, JSON.stringify(CONTATTI_PREDEFINITI, null, 2));
   }
+  if (!fs.existsSync(fileOfferte)) {
+    fs.writeFileSync(fileOfferte, JSON.stringify(OFFERTE_PREDEFINITE, null, 2));
+  }
+}
+
+function leggiOfferte() {
+  assicuraArchivioDati();
+  return JSON.parse(fs.readFileSync(fileOfferte, "utf8"));
+}
+
+function salvaOfferte(offerte) {
+  fs.writeFileSync(fileOfferte, JSON.stringify(offerte, null, 2));
 }
 
 function leggiContatti() {
@@ -336,7 +348,7 @@ function costruisciPipeline(contatti) {
 }
 
 function trovaOfferta(id) {
-  return OFFERTE_PREDEFINITE.find((offerta) => offerta.id === id);
+  return leggiOfferte().find((offerta) => offerta.id === id);
 }
 
 function generaSuggerimentoAi(contatto) {
@@ -404,7 +416,7 @@ const server = http.createServer(async (req, res) => {
   const contatti = leggiContatti().map(arricchisciContatto);
 
   if (pathname === "/api/metadati" && req.method === "GET") {
-    inviaJson(res, 200, { statiPipeline: STATI_PIPELINE, offerte: OFFERTE_PREDEFINITE });
+    inviaJson(res, 200, { statiPipeline: STATI_PIPELINE, offerte: leggiOfferte() });
     return;
   }
 
@@ -419,12 +431,56 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/offerte" && req.method === "GET") {
-    const offerte = OFFERTE_PREDEFINITE.map((offerta) => ({
+    const offerte = leggiOfferte().map((offerta) => ({
       ...offerta,
-      contattiProposti: contatti.filter((contatto) => (contatto.offerteProposteIds || []).includes(offerta.id)).length,
-      contattiSottoscritti: contatti.filter((contatto) => (contatto.offerteSottoscritteIds || []).includes(offerta.id)).length
+      contattiProposti: contatti.filter((c) => (c.offerteProposteIds || []).includes(offerta.id)).length,
+      contattiSottoscritti: contatti.filter((c) => (c.offerteSottoscritteIds || []).includes(offerta.id)).length
     }));
     inviaJson(res, 200, { offerte });
+    return;
+  }
+
+  if (pathname === "/api/offerte" && req.method === "POST") {
+    try {
+      const body = await leggiBody(req);
+      if (!body.nome) { inviaJson(res, 400, { errore: "Il campo nome è obbligatorio" }); return; }
+      const offerte = leggiOfferte();
+      const nuova = {
+        id: `offerta-${randomUUID().slice(0, 8)}`,
+        nome: body.nome,
+        descrizione: body.descrizione || "",
+        prezzo: body.prezzo || "—",
+        tipologia: body.tipologia === "partner" ? "partner" : "azienda",
+        percentualePartner: body.percentualePartner || "0%"
+      };
+      offerte.push(nuova);
+      salvaOfferte(offerte);
+      inviaJson(res, 201, { offerta: nuova, offerte });
+    } catch { inviaJson(res, 400, { errore: "Payload non valido" }); }
+    return;
+  }
+
+  if (pathname.startsWith("/api/offerte/") && req.method === "PATCH") {
+    try {
+      const id = pathname.split("/").pop();
+      const body = await leggiBody(req);
+      const offerte = leggiOfferte();
+      const idx = offerte.findIndex((o) => o.id === id);
+      if (idx === -1) { inviaJson(res, 404, { errore: "Offerta non trovata" }); return; }
+      offerte[idx] = { ...offerte[idx], ...body, id };
+      salvaOfferte(offerte);
+      inviaJson(res, 200, { offerta: offerte[idx], offerte });
+    } catch { inviaJson(res, 400, { errore: "Payload non valido" }); }
+    return;
+  }
+
+  if (pathname.startsWith("/api/offerte/") && req.method === "DELETE") {
+    const id = pathname.split("/").pop();
+    const offerte = leggiOfferte();
+    const nuove = offerte.filter((o) => o.id !== id);
+    if (nuove.length === offerte.length) { inviaJson(res, 404, { errore: "Offerta non trovata" }); return; }
+    salvaOfferte(nuove);
+    inviaJson(res, 200, { offerte: nuove });
     return;
   }
 

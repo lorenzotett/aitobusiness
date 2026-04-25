@@ -1102,6 +1102,146 @@ textarea.field-control { min-height: 96px; resize: vertical; }
 /* ─────────────── ANIMATIONS ─────────────── */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
+@keyframes modalIn { from { opacity: 0; transform: scale(0.96) translateY(8px); } }
+
+/* ─────────────── MODAL ─────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,20,16,0.52);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 900;
+  padding: 16px;
+  backdrop-filter: blur(4px);
+}
+.modal-card {
+  background: var(--s-strong);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+  animation: modalIn 0.2s ease;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.modal-head h3 { margin: 0; font-size: 18px; }
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--c-line-mid);
+}
+
+/* ─────────────── FORM STACK ─────────────── */
+.form-stack { display: flex; flex-direction: column; gap: 14px; }
+.form-field { display: flex; flex-direction: column; gap: 5px; }
+.form-field label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.form-field input,
+.form-field select,
+.form-field textarea {
+  padding: 10px 12px;
+  border: 1.5px solid var(--c-line-mid);
+  border-radius: var(--r-md);
+  font-size: 14px;
+  background: var(--s-bg);
+  color: var(--c-ink);
+  font-family: inherit;
+  transition: border-color var(--transition);
+}
+.form-field textarea { resize: vertical; min-height: 72px; }
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  outline: none;
+  border-color: var(--c-green);
+}
+
+/* ─────────────── OFFER CARD ENHANCEMENTS ─────────────── */
+.offer-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.offer-card-actions { display: flex; gap: 6px; }
+
+.btn-danger {
+  color: var(--c-rose) !important;
+  border-color: var(--c-rose-tint) !important;
+}
+.btn-danger:hover { background: var(--c-rose-tint) !important; }
+
+.offer-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--c-line);
+}
+.offer-section .eyebrow { margin-bottom: 6px; }
+
+.linked-contacts-list { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+.linked-contact-row { display: flex; align-items: center; gap: 6px; }
+
+.icon-remove-btn {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; line-height: 1;
+  color: var(--c-muted);
+  transition: background var(--transition), color var(--transition);
+}
+.icon-remove-btn:hover { background: var(--c-rose-tint); color: var(--c-rose); }
+
+.offer-assign-form {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--c-line);
+}
+
+.assign-row {
+  display: flex;
+  gap: 6px;
+  flex-direction: column;
+  align-items: stretch;
+}
+.assign-row select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid var(--c-line-mid);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  background: var(--s-bg);
+  color: var(--c-ink);
+  font-family: inherit;
+  transition: border-color var(--transition);
+}
+.assign-row select:focus { outline: none; border-color: var(--c-green); }
+
+/* offer-mini-item with remove button */
+.offer-mini-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.offer-mini-item > div { flex: 1; min-width: 0; }
 
 /* ─────────────── BREAKPOINT: TABLET 768px+ ─────────────── */
 @media (min-width: 768px) {

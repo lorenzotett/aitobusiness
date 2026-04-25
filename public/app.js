@@ -176,17 +176,124 @@ function impostaMenuAttivo() {
 
 /* ─────────────── CARICAMENTO DATI ─────────────── */
 async function caricaDati() {
-  const [pContatti, pPrompt, pMeta] = await Promise.all([
+  const [pContatti, pPrompt, pMeta, pOfferte] = await Promise.all([
     api("/api/contatti"),
     api("/api/prompt-ai"),
-    api("/api/metadati")
+    api("/api/metadati"),
+    api("/api/offerte")
   ]);
   statoApp.contatti      = pContatti.contatti;
   statoApp.riepilogo     = pContatti.riepilogo;
   statoApp.promptAi      = pPrompt.promptAi;
   statoApp.statiPipeline = pMeta.statiPipeline;
-  statoApp.offerte       = pMeta.offerte;
+  statoApp.offerte       = pOfferte.offerte;
   aggiornaMetaSidebar();
+}
+
+/* ─────────────── OFFERTE CRUD ─────────────── */
+async function creaOfferta(dati) {
+  const res = await api("/api/offerte", { method: "POST", body: JSON.stringify(dati) });
+  statoApp.offerte = res.offerte;
+  aggiornaMetaSidebar();
+  return res.offerta;
+}
+
+async function salvaModificheOfferta(id, dati) {
+  const res = await api(`/api/offerte/${id}`, { method: "PATCH", body: JSON.stringify(dati) });
+  statoApp.offerte = res.offerte;
+  aggiornaMetaSidebar();
+  return res.offerta;
+}
+
+async function eliminaOfferta(id) {
+  const res = await api(`/api/offerte/${id}`, { method: "DELETE" });
+  statoApp.offerte = res.offerte;
+  aggiornaMetaSidebar();
+}
+
+async function assegnaOffertaContatto(offortaId, contattoId, campo, aggiunge) {
+  const c = trovaContatto(contattoId);
+  if (!c) return;
+  const lista = [...(c[campo] || [])];
+  if (aggiunge && !lista.includes(offortaId)) lista.push(offortaId);
+  if (!aggiunge) { const i = lista.indexOf(offortaId); if (i !== -1) lista.splice(i, 1); }
+  return aggiornaContatto(contattoId, { [campo]: lista });
+}
+
+function mostraModaleOfferta(offerta = null) {
+  document.getElementById("modale-offerta")?.remove();
+  const modale = document.createElement("div");
+  modale.id = "modale-offerta";
+  modale.className = "modal-overlay";
+  modale.innerHTML = `
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>${offerta ? "Modifica offerta" : "Nuova offerta"}</h3>
+        <button class="icon-btn" id="chiudi-modale" aria-label="Chiudi">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="form-stack">
+        <div class="form-field">
+          <label>Nome *</label>
+          <input id="of-nome" placeholder="es. Sprint Revenue Engine" value="${escapeHtml(offerta?.nome || '')}" />
+        </div>
+        <div class="form-field">
+          <label>Descrizione</label>
+          <textarea id="of-desc" rows="3" placeholder="Descrizione breve…">${escapeHtml(offerta?.descrizione || '')}</textarea>
+        </div>
+        <div class="form-field">
+          <label>Tipologia</label>
+          <select id="of-tipo">
+            <option value="azienda" ${(!offerta || offerta.tipologia === 'azienda') ? 'selected' : ''}>Azienda</option>
+            <option value="partner" ${offerta?.tipologia === 'partner' ? 'selected' : ''}>Partner</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Prezzo</label>
+          <input id="of-prezzo" placeholder="es. EUR 1.900 o EUR 149/mese" value="${escapeHtml(offerta?.prezzo || '')}" />
+        </div>
+        <div class="form-field">
+          <label>% Partner</label>
+          <input id="of-partner" placeholder="es. 30%" value="${escapeHtml(offerta?.percentualePartner || '0%')}" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost-btn" id="annulla-modale">Annulla</button>
+        <button class="btn" id="salva-offerta">${offerta ? "Salva modifiche" : "Crea offerta"}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modale);
+
+  const chiudi = () => modale.remove();
+  document.getElementById("chiudi-modale")?.addEventListener("click", chiudi);
+  document.getElementById("annulla-modale")?.addEventListener("click", chiudi);
+  modale.addEventListener("click", e => { if (e.target === modale) chiudi(); });
+
+  document.getElementById("salva-offerta")?.addEventListener("click", e =>
+    conBottone(e.currentTarget, "Salvo…", async () => {
+      const nome = document.getElementById("of-nome").value.trim();
+      if (!nome) { mostraToast("Il nome è obbligatorio"); return; }
+      const dati = {
+        nome,
+        descrizione: document.getElementById("of-desc").value.trim(),
+        tipologia:   document.getElementById("of-tipo").value,
+        prezzo:      document.getElementById("of-prezzo").value.trim(),
+        percentualePartner: document.getElementById("of-partner").value.trim() || "0%"
+      };
+      if (offerta) {
+        await salvaModificheOfferta(offerta.id, dati);
+        mostraToast("Offerta aggiornata");
+      } else {
+        await creaOfferta(dati);
+        mostraToast("Offerta creata");
+      }
+      chiudi();
+      renderRoute();
+    })
+  );
 }
 
 async function aggiornaContatto(id, payload, msg) {
@@ -658,26 +765,52 @@ async function renderDettaglioContatto(contatto) {
         </div>
 
         <div class="linked-offers-block">
-          <span class="eyebrow">Offerte proposte</span>
-          <div class="offer-mini-list" style="margin-top:8px">
+          <div class="section-head" style="margin-bottom:8px">
+            <span class="eyebrow">Offerte proposte</span>
+          </div>
+          <div class="offer-mini-list" id="lista-proposte">
             ${payload.offerteProposte.map(o => `
               <div class="offer-mini-item">
-                <strong>${escapeHtml(o.nome)}</strong>
-                <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)} · Partner ${escapeHtml(o.percentualePartner)}</span>
+                <div>
+                  <strong>${escapeHtml(o.nome)}</strong>
+                  <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
+                </div>
+                <button class="icon-remove-btn" data-rm-det-proposta="${o.id}" title="Rimuovi">×</button>
               </div>`).join("") || `<p class="subtle text-sm">Nessuna</p>`}
+          </div>
+          <div class="assign-row" style="margin-top:8px">
+            <select id="det-add-proposta">
+              <option value="">Aggiungi offerta…</option>
+              ${statoApp.offerte.filter(o => !c.offerteProposteIds?.includes(o.id))
+                .map(o => `<option value="${o.id}">${escapeHtml(o.nome)}</option>`).join("")}
+            </select>
+            <button class="small-btn" id="btn-add-proposta">Aggiungi</button>
           </div>
         </div>
 
         <div class="linked-offers-block">
-          <span class="eyebrow">Offerte sottoscritte</span>
-          <div class="offer-mini-list" style="margin-top:8px">
+          <div class="section-head" style="margin-bottom:8px">
+            <span class="eyebrow">Offerte sottoscritte</span>
+          </div>
+          <div class="offer-mini-list" id="lista-sottoscritte">
             ${payload.offerteSottoscritte.length
               ? payload.offerteSottoscritte.map(o => `
                   <div class="offer-mini-item">
-                    <strong>${escapeHtml(o.nome)}</strong>
-                    <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
+                    <div>
+                      <strong>${escapeHtml(o.nome)}</strong>
+                      <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
+                    </div>
+                    <button class="icon-remove-btn" data-rm-det-sottoscritta="${o.id}" title="Rimuovi">×</button>
                   </div>`).join("")
               : `<p class="subtle text-sm">Nessuna sottoscrizione attiva</p>`}
+          </div>
+          <div class="assign-row" style="margin-top:8px">
+            <select id="det-add-sottoscritta">
+              <option value="">Aggiungi offerta…</option>
+              ${statoApp.offerte.filter(o => !c.offerteSottoscritteIds?.includes(o.id))
+                .map(o => `<option value="${o.id}">${escapeHtml(o.nome)}</option>`).join("")}
+            </select>
+            <button class="small-btn" id="btn-add-sottoscritta">Aggiungi</button>
           </div>
         </div>
       </div>
@@ -696,6 +829,52 @@ async function renderDettaglioContatto(contatto) {
     </div>`;
 
   document.getElementById("copy-dettaglio")?.addEventListener("click", e => copiaTesto(c.messaggioSuggerito, e.currentTarget));
+
+  const ricaricaScheda = async () => {
+    await renderDettaglioContatto(trovaContatto(c.id));
+    renderPannelloAi(trovaContatto(c.id));
+    bindNav();
+  };
+
+  document.querySelectorAll("[data-rm-det-proposta]").forEach(btn =>
+    btn.addEventListener("click", e =>
+      conBottone(e.currentTarget, "…", async () => {
+        await assegnaOffertaContatto(btn.dataset.rmDetProposta, c.id, "offerteProposteIds", false);
+        mostraToast("Offerta rimossa dalle proposte");
+        await ricaricaScheda();
+      })
+    )
+  );
+
+  document.querySelectorAll("[data-rm-det-sottoscritta]").forEach(btn =>
+    btn.addEventListener("click", e =>
+      conBottone(e.currentTarget, "…", async () => {
+        await assegnaOffertaContatto(btn.dataset.rmDetSottoscritta, c.id, "offerteSottoscritteIds", false);
+        mostraToast("Offerta rimossa dalle sottoscrizioni");
+        await ricaricaScheda();
+      })
+    )
+  );
+
+  document.getElementById("btn-add-proposta")?.addEventListener("click", e => {
+    const sel = document.getElementById("det-add-proposta");
+    if (!sel?.value) { mostraToast("Seleziona un'offerta"); return; }
+    conBottone(e.currentTarget, "…", async () => {
+      await assegnaOffertaContatto(sel.value, c.id, "offerteProposteIds", true);
+      mostraToast("Offerta aggiunta alle proposte");
+      await ricaricaScheda();
+    });
+  });
+
+  document.getElementById("btn-add-sottoscritta")?.addEventListener("click", e => {
+    const sel = document.getElementById("det-add-sottoscritta");
+    if (!sel?.value) { mostraToast("Seleziona un'offerta"); return; }
+    conBottone(e.currentTarget, "…", async () => {
+      await assegnaOffertaContatto(sel.value, c.id, "offerteSottoscritteIds", true);
+      mostraToast("Offerta aggiunta alle sottoscrizioni");
+      await ricaricaScheda();
+    });
+  });
 }
 
 /* ─────────────── PIPELINE (KANBAN) ─────────────── */
@@ -782,39 +961,141 @@ function renderPipeline() {
 
 /* ─────────────── OFFERTE ─────────────── */
 function renderOfferte() {
+  const opzioniContatti = statoApp.contatti
+    .map(c => `<option value="${c.id}">${escapeHtml(c.nome)} — ${escapeHtml(c.azienda)}</option>`)
+    .join("");
+
   areaPrincipale.innerHTML = `
     <div class="page-header-row">
       <div class="page-header">
         <span class="eyebrow">Catalogo offerte</span>
         <h1>Offerte</h1>
-        <p>Offerte aziendali e in partnership collegate automaticamente ai contatti in base a tipologia e settore.</p>
+        <p>Crea, modifica e collega le offerte ai contatti. Proposte e sottoscrizioni tracciate per ogni persona.</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn" id="nuova-offerta">+ Nuova offerta</button>
       </div>
     </div>
 
     <div class="offers-grid">
-      ${statoApp.offerte.map(o => {
-        const collegati = statoApp.contatti.filter(c => (c.offerteProposteIds||[]).includes(o.id));
-        const badgeCls  = o.tipologia === "partner" ? "offer-type-partner" : "offer-type-azienda";
-        return `
-          <article class="offer-card">
-            <span class="offer-type-badge ${badgeCls}">${escapeHtml(o.tipologia)}</span>
-            <h3>${escapeHtml(o.nome)}</h3>
-            <p>${escapeHtml(o.descrizione)}</p>
-            <div class="offer-meta-grid">
-              <div><span>Prezzo</span><strong>${escapeHtml(o.prezzo)}</strong></div>
-              <div><span>% Partner</span><strong>${escapeHtml(o.percentualePartner)}</strong></div>
-            </div>
-            <div class="offer-linked">
-              <span class="eyebrow">Contatti collegati</span>
-              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
-                ${collegati.length
-                  ? collegati.map(c => `<button class="small-btn" data-dettaglio="${c.id}">${escapeHtml(c.nome)}</button>`).join("")
-                  : `<span class="subtle text-sm">Nessun contatto collegato</span>`}
+      ${statoApp.offerte.length === 0
+        ? `<div class="empty-state"><strong>Nessuna offerta.</strong><p>Crea la prima offerta con il pulsante in alto.</p></div>`
+        : statoApp.offerte.map(o => {
+          const proposti     = statoApp.contatti.filter(c => (c.offerteProposteIds||[]).includes(o.id));
+          const sottoscritti = statoApp.contatti.filter(c => (c.offerteSottoscritteIds||[]).includes(o.id));
+          const badgeCls     = o.tipologia === "partner" ? "offer-type-partner" : "offer-type-azienda";
+          return `
+            <article class="offer-card" data-offer-id="${o.id}">
+              <div class="offer-card-head">
+                <span class="offer-type-badge ${badgeCls}">${escapeHtml(o.tipologia)}</span>
+                <div class="offer-card-actions">
+                  <button class="small-btn" data-edit-offer="${o.id}">Modifica</button>
+                  <button class="small-btn btn-danger" data-delete-offer="${o.id}">Elimina</button>
+                </div>
               </div>
-            </div>
-          </article>`;
-      }).join("")}
+              <h3 style="margin:10px 0 6px">${escapeHtml(o.nome)}</h3>
+              <p class="subtle text-sm">${escapeHtml(o.descrizione)}</p>
+              <div class="offer-meta-grid" style="margin-top:12px">
+                <div><span>Prezzo</span><strong>${escapeHtml(o.prezzo)}</strong></div>
+                <div><span>% Partner</span><strong>${escapeHtml(o.percentualePartner)}</strong></div>
+              </div>
+
+              <div class="offer-section">
+                <span class="eyebrow">Proposte a (${proposti.length})</span>
+                <div class="linked-contacts-list">
+                  ${proposti.map(c => `
+                    <div class="linked-contact-row">
+                      <button class="small-btn" data-dettaglio="${c.id}">${escapeHtml(c.nome)}</button>
+                      <button class="icon-remove-btn" data-rm-proposta="${c.id}" data-rm-offer="${o.id}" title="Rimuovi">×</button>
+                    </div>`).join("") || `<span class="subtle text-sm">Nessuno</span>`}
+                </div>
+              </div>
+
+              <div class="offer-section">
+                <span class="eyebrow">Sottoscritti (${sottoscritti.length})</span>
+                <div class="linked-contacts-list">
+                  ${sottoscritti.map(c => `
+                    <div class="linked-contact-row">
+                      <button class="small-btn" data-dettaglio="${c.id}">${escapeHtml(c.nome)}</button>
+                      <button class="icon-remove-btn" data-rm-sottoscritta="${c.id}" data-rm-offer="${o.id}" title="Rimuovi">×</button>
+                    </div>`).join("") || `<span class="subtle text-sm">Nessuno</span>`}
+                </div>
+              </div>
+
+              <div class="offer-assign-form">
+                <span class="eyebrow" style="display:block;margin-bottom:8px">Assegna a contatto</span>
+                <div class="assign-row">
+                  <select class="assign-contact-sel" data-for-offer="${o.id}">
+                    <option value="">Seleziona contatto…</option>
+                    ${opzioniContatti}
+                  </select>
+                  <select class="assign-type-sel" data-type-for="${o.id}">
+                    <option value="offerteProposteIds">Proposta</option>
+                    <option value="offerteSottoscritteIds">Sottoscritta</option>
+                  </select>
+                  <button class="small-btn" data-assign-btn="${o.id}">Assegna</button>
+                </div>
+              </div>
+            </article>`;
+        }).join("")}
     </div>`;
+
+  document.getElementById("nuova-offerta")?.addEventListener("click", () => mostraModaleOfferta());
+
+  document.querySelectorAll("[data-edit-offer]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      const o = statoApp.offerte.find(x => x.id === btn.dataset.editOffer);
+      if (o) mostraModaleOfferta(o);
+    })
+  );
+
+  document.querySelectorAll("[data-delete-offer]").forEach(btn =>
+    btn.addEventListener("click", e =>
+      conBottone(e.currentTarget, "…", async () => {
+        if (!confirm("Eliminare questa offerta?")) return;
+        await eliminaOfferta(btn.dataset.deleteOffer);
+        mostraToast("Offerta eliminata");
+        renderRoute();
+      })
+    )
+  );
+
+  document.querySelectorAll("[data-rm-proposta]").forEach(btn =>
+    btn.addEventListener("click", e =>
+      conBottone(e.currentTarget, "…", async () => {
+        await assegnaOffertaContatto(btn.dataset.rmOffer, btn.dataset.rmProposta, "offerteProposteIds", false);
+        mostraToast("Rimosso dalle proposte");
+        renderRoute();
+      })
+    )
+  );
+
+  document.querySelectorAll("[data-rm-sottoscritta]").forEach(btn =>
+    btn.addEventListener("click", e =>
+      conBottone(e.currentTarget, "…", async () => {
+        await assegnaOffertaContatto(btn.dataset.rmOffer, btn.dataset.rmSottoscritta, "offerteSottoscritteIds", false);
+        mostraToast("Rimosso dalle sottoscrizioni");
+        renderRoute();
+      })
+    )
+  );
+
+  document.querySelectorAll("[data-assign-btn]").forEach(btn =>
+    btn.addEventListener("click", e => {
+      const oid = btn.dataset.assignBtn;
+      const contactSel = document.querySelector(`[data-for-offer="${oid}"]`);
+      const typeSel    = document.querySelector(`[data-type-for="${oid}"]`);
+      const cid  = contactSel?.value;
+      const campo = typeSel?.value;
+      if (!cid) { mostraToast("Seleziona un contatto"); return; }
+      conBottone(e.currentTarget, "…", async () => {
+        await assegnaOffertaContatto(oid, cid, campo, true);
+        const label = campo === "offerteSottoscritteIds" ? "sottoscrizione" : "proposta";
+        mostraToast(`Offerta aggiunta come ${label}`);
+        renderRoute();
+      });
+    })
+  );
 
   bindDettaglioContatto();
 }
