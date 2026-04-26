@@ -1,0 +1,34 @@
+[
+  {
+    "id": "offerta-aito-sprint",
+    "nome": "Sprint Revenue Engine",
+    "descrizione": "Setup completo del motore commerciale LinkedIn con import, scoring, messaggi AI e pipeline operativa.",
+    "prezzo": "EUR 1.900",
+    "tipologia": "azienda",
+    "percentualePartner": "0%"
+  },
+  {
+    "id": "offerta-aito-abbonamento",
+    "nome": "Aito Business Pro",
+    "descrizione": "Abbonamento mensile con contatti illimitati, AI completa, offerte collegate e vista pipeline condivisa.",
+    "prezzo": "EUR 149/mese",
+    "tipologia": "azienda",
+    "percentualePartner": "0%"
+  },
+  {
+    "id": "offerta-partner-outreach",
+    "nome": "Pacchetto Outreach in Partnership",
+    "descrizione": "Servizio partner per copywriting, follow-up e gestione outreach LinkedIn per il cliente finale.",
+    "prezzo": "EUR 1.200",
+    "tipologia": "partner",
+    "percentualePartner": "30%"
+  },
+  {
+    "id": "offerta-partner-training",
+    "nome": "Training Sales Partner",
+    "descrizione": "Sessione partner per founder, team sales e consulenti che vogliono aumentare conversioni da chat a call.",
+    "prezzo": "EUR 900",
+    "tipologia": "partner",
+    "percentualePartner": "25%"
+  }
+]
