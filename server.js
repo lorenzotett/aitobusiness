@@ -418,6 +418,227 @@ function leggiBody(req) {
   });
 }
 
+/* ─────────────── CSV UTILITIES ─────────────── */
+
+function rimuoviBOM(t) { return t.replace(/^﻿/, ""); }
+
+function splitLineeCSV(testo) {
+  const pulito = rimuoviBOM(testo).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const righe = []; let cur = ""; let inQ = false;
+  for (let i = 0; i < pulito.length; i++) {
+    const c = pulito[i];
+    if (c === '"') { if (inQ && pulito[i+1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+    else if (c === "\n" && !inQ) { righe.push(cur); cur = ""; }
+    else cur += c;
+  }
+  if (cur.trim()) righe.push(cur);
+  return righe;
+}
+
+function splitCampiCSV(riga) {
+  const out = []; let cur = ""; let inQ = false;
+  for (let i = 0; i < riga.length; i++) {
+    const c = riga[i];
+    if (c === '"') { if (inQ && riga[i+1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+    else if (c === "," && !inQ) { out.push(cur.trim().replace(/^"|"$/g, "")); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur.trim().replace(/^"|"$/g, ""));
+  return out;
+}
+
+function trovaCol(header, ...chiavi) {
+  const h = header.map(c => c.toLowerCase().replace(/[\s"'_\-]+/g, ""));
+  for (const k of chiavi) {
+    const kn = k.toLowerCase().replace(/[\s"'_\-]+/g, "");
+    const i = h.findIndex(c => c === kn || c.includes(kn));
+    if (i !== -1) return i;
+  }
+  return -1;
+}
+
+function parseDataLinkedIn(str = "") {
+  const mesi = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11,
+                  gen:0,mag:4,giu:5,lug:6,ago:7,set:8,ott:9,dic:11 };
+  const m1 = str.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/);
+  if (m1) {
+    const month = mesi[m1[2].toLowerCase().slice(0,3)];
+    if (month !== undefined) {
+      return new Date(parseInt(m1[3]), month, parseInt(m1[1])).toISOString().slice(0,10);
+    }
+  }
+  const m2 = str.match(/(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (m2) return `${m2[1]}-${m2[2]}-${m2[3]}`;
+  return today();
+}
+
+/* ─────────────── RILEVAMENTO FORMATO ─────────────── */
+
+function rilevaFormatoCSV(righe) {
+  for (let i = 0; i < Math.min(6, righe.length); i++) {
+    const campi = splitCampiCSV(righe[i]).map(c => c.toLowerCase().trim().replace(/[\s"]+/g, ""));
+    if (campi.some(c => c.includes("conversationid") || c === "conversationid" || c === "from") &&
+        campi.some(c => c.includes("date") || c.includes("sentat") || c.includes("content"))) {
+      return { tipo: "linkedin-messages", rigaH: i };
+    }
+    if (campi.some(c => c.includes("firstname") || c.includes("firstname") || c === "nome") &&
+        campi.some(c => c.includes("lastname") || c === "cognome" || c.includes("company") || c.includes("connected"))) {
+      return { tipo: "linkedin-connections", rigaH: i };
+    }
+  }
+  return { tipo: "generico", rigaH: 0 };
+}
+
+/* ─────────────── PARSER LINKEDIN CONNECTIONS ─────────────── */
+
+function parseLinkedInConnections(testo) {
+  const righe = splitLineeCSV(testo).filter(r => r.trim());
+  const { rigaH } = rilevaFormatoCSV(righe);
+  if (righe.length <= rigaH + 1) return [];
+  const h = splitCampiCSV(righe[rigaH]);
+  const iNome     = trovaCol(h, "first name", "firstname", "nome", "first");
+  const iCognome  = trovaCol(h, "last name", "lastname", "cognome", "last");
+  const iEmail    = trovaCol(h, "email address", "email", "mail");
+  const iAzienda  = trovaCol(h, "company", "azienda", "employer", "organization");
+  const iRuolo    = trovaCol(h, "position", "title", "jobtitle", "ruolo", "job title");
+  const iLocalita = trovaCol(h, "location", "localita", "city", "region", "country");
+  const iSettore  = trovaCol(h, "industry", "settore", "sector");
+  const iConnOn   = trovaCol(h, "connected on", "connectedon", "connected");
+  const iUrl      = trovaCol(h, "url", "profileurl", "linkedin url", "link");
+  const g = (campi, idx) => (idx >= 0 && campi[idx]) ? campi[idx].trim() : "";
+  const out = [];
+  for (let i = rigaH + 1; i < righe.length; i++) {
+    const c = splitCampiCSV(righe[i]);
+    if (c.every(x => !x.trim())) continue;
+    const nome = [g(c, iNome), g(c, iCognome)].filter(Boolean).join(" ");
+    if (!nome) continue;
+    const connON = g(c, iConnOn);
+    out.push({
+      nome, email: g(c, iEmail),
+      azienda: g(c, iAzienda) || "Azienda sconosciuta",
+      ruolo: g(c, iRuolo) || "Ruolo non disponibile",
+      localita: g(c, iLocalita), settore: g(c, iSettore),
+      linkedinUrl: g(c, iUrl), punteggioLead: 50,
+      stato: "Da contattare",
+      ultimoContatto: parseDataLinkedIn(connON),
+      tag: ["LinkedIn"],
+      timeline: [{ tipo: "import", data: today(),
+        testo: `Importato da LinkedIn Connections${connON ? ` · connesso ${connON}` : ""}.` }]
+    });
+  }
+  return out;
+}
+
+/* ─────────────── PARSER LINKEDIN MESSAGES ─────────────── */
+
+function parseLinkedInMessages(testo) {
+  const righe = splitLineeCSV(testo).filter(r => r.trim());
+  const { rigaH } = rilevaFormatoCSV(righe);
+  if (righe.length <= rigaH + 1) return new Map();
+  const h = splitCampiCSV(righe[rigaH]);
+  const iFrom    = trovaCol(h, "from", "sender", "da", "mittente");
+  const iDate    = trovaCol(h, "date", "sentat", "timestamp", "data");
+  const iContent = trovaCol(h, "content", "messagebody", "body", "message", "testo");
+  const g = (c, idx) => (idx >= 0 && c[idx]) ? c[idx].trim() : "";
+  const parPos = ["interessato","voglio","quando","fissiamo","volentieri","perfetto","grazie","ottimo","certo"];
+  const parNeg = ["no grazie","non sono","non mi interessa","spam","stop"];
+  const stats = new Map();
+  for (let i = rigaH + 1; i < righe.length; i++) {
+    const c = splitCampiCSV(righe[i]);
+    const from = g(c, iFrom); const date = parseDataLinkedIn(g(c, iDate));
+    const content = g(c, iContent).toLowerCase();
+    if (!from) continue;
+    if (!stats.has(from)) stats.set(from, { count: 0, ultimaData: "", sentimento: "Neutro" });
+    const s = stats.get(from);
+    s.count++;
+    if (date > s.ultimaData) s.ultimaData = date;
+    if (parPos.some(p => content.includes(p))) s.sentimento = "Positivo";
+    else if (parNeg.some(p => content.includes(p))) s.sentimento = "Negativo";
+  }
+  return stats;
+}
+
+/* ─────────────── PARSER GENERICO CSV ─────────────── */
+
+function parseGenericoCSV(testo) {
+  const righe = splitLineeCSV(testo).filter(r => r.trim());
+  if (righe.length < 2) return [];
+  const h = splitCampiCSV(righe[0]);
+  const g = (campi, ...chiavi) => {
+    for (const k of chiavi) { const i = trovaCol(h, k); if (i >= 0 && campi[i]?.trim()) return campi[i].trim(); }
+    return "";
+  };
+  return righe.slice(1).map(riga => {
+    const c = splitCampiCSV(riga);
+    if (c.every(x => !x.trim())) return null;
+    const nome = [g(c,"first name","firstname","nome","name"), g(c,"last name","lastname","cognome")].filter(Boolean).join(" ");
+    if (!nome) return null;
+    return {
+      nome, azienda: g(c,"company","azienda","employer") || "Azienda sconosciuta",
+      ruolo: g(c,"position","title","ruolo","role") || "Ruolo non disponibile",
+      localita: g(c,"location","localita","city"), settore: g(c,"industry","settore"),
+      punteggioLead: parseInt(g(c,"score","punteggio","lead score")) || 50,
+      stato: g(c,"stato","state","status") || "Da contattare",
+      tag: ["Import"], timeline: []
+    };
+  }).filter(Boolean);
+}
+
+/* ─────────────── ARRICCHIMENTO CON MESSAGGI ─────────────── */
+
+function arricchisciConMessaggi(contatti, mappaMsg) {
+  if (!mappaMsg.size) return contatti;
+  return contatti.map(c => {
+    const nN = c.nome.toLowerCase().replace(/\s+/g, " ").trim();
+    for (const [nome, s] of mappaMsg) {
+      const nM = nome.toLowerCase().replace(/\s+/g, " ").trim();
+      if (nN === nM || nN.includes(nM) || nM.includes(nN) || nN.split(" ")[0] === nM.split(" ")[0]) {
+        const boost = Math.min(35, s.count * 4);
+        return {
+          ...c,
+          punteggioLead: Math.min(99, (c.punteggioLead || 50) + boost),
+          ultimoContatto: s.ultimaData || c.ultimoContatto,
+          stato: s.count >= 8 ? "Follow-up call effettuata" : s.count >= 4 ? "Contattato" : "Da contattare",
+          sentiment: s.sentimento,
+          tag: [...(c.tag || []), `${s.count} msg`],
+          timeline: [...(c.timeline || []), {
+            tipo: "inbound", data: s.ultimaData || today(),
+            testo: `${s.count} messaggi LinkedIn · Sentimento: ${s.sentimento}`
+          }]
+        };
+      }
+    }
+    return c;
+  });
+}
+
+function deduplicaLista(lista) {
+  const visti = new Map();
+  for (const c of lista) {
+    const k = `${(c.nome||"").toLowerCase().trim()}|${(c.azienda||"").toLowerCase().trim()}`;
+    if (k !== "|" && !visti.has(k)) visti.set(k, c);
+  }
+  return Array.from(visti.values());
+}
+
+function parsaFilesImport(files) {
+  let tutti = []; let mappaMsg = new Map();
+  for (const { nome, contenuto } of files) {
+    const lower = nome.toLowerCase();
+    if (lower.endsWith(".json")) {
+      try { const d = JSON.parse(contenuto); tutti.push(...(Array.isArray(d) ? d : d.contatti || [])); } catch {}
+    } else {
+      const righe = splitLineeCSV(contenuto).filter(r => r.trim());
+      const { tipo } = rilevaFormatoCSV(righe);
+      if (tipo === "linkedin-connections") tutti.push(...parseLinkedInConnections(contenuto));
+      else if (tipo === "linkedin-messages") mappaMsg = parseLinkedInMessages(contenuto);
+      else tutti.push(...parseGenericoCSV(contenuto));
+    }
+  }
+  if (mappaMsg.size) tutti = arricchisciConMessaggi(tutti, mappaMsg);
+  return deduplicaLista(tutti);
+}
+
 const rotteApplicazione = ["/", "/dashboard", "/contatti", "/pipeline", "/offerte", "/analytics", "/onboarding", "/suggerimenti-ai"];
 const rotteLegacy = ["/contacts", "/upload", "/offers", "/ai-suggestions", "/segments"];
 
@@ -550,22 +771,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pathname === "/api/import/preview" && req.method === "POST") {
+    try {
+      const body = await leggiBody(req);
+      const files = Array.isArray(body.files) ? body.files : [];
+      if (!files.length) { inviaJson(res, 400, { errore: "Nessun file fornito" }); return; }
+      const contattiRaw = parsaFilesImport(files);
+      if (!contattiRaw.length) { inviaJson(res, 400, { errore: "Nessun contatto trovato. Verifica il formato del file." }); return; }
+      const chiavi = new Set(contatti.map(c => `${c.nome.toLowerCase().trim()}|${c.azienda.toLowerCase().trim()}`));
+      const anteprima = contattiRaw.slice(0, 300).map(c => {
+        const a = arricchisciContatto(c);
+        const isDuplicate = chiavi.has(`${a.nome.toLowerCase().trim()}|${a.azienda.toLowerCase().trim()}`);
+        return { nome: a.nome, ruolo: a.ruolo, azienda: a.azienda, localita: a.localita,
+          tipologiaContatto: a.tipologiaContatto, livelloPriorita: a.livelloPriorita,
+          punteggioLead: a.punteggioLead, stato: a.stato, tag: a.tag, isDuplicate };
+      });
+      const partner = contattiRaw.filter(c => classificaTipologiaContatto(c) === "Potenziale Partner").length;
+      inviaJson(res, 200, {
+        anteprima,
+        stats: {
+          trovati: contattiRaw.length,
+          nuovi: contattiRaw.filter(c => !chiavi.has(`${(c.nome||"").toLowerCase().trim()}|${(c.azienda||"").toLowerCase().trim()}`)).length,
+          duplicati: contattiRaw.filter(c => chiavi.has(`${(c.nome||"").toLowerCase().trim()}|${(c.azienda||"").toLowerCase().trim()}`)).length,
+          partner, clienti: contattiRaw.length - partner,
+          inAnteprima: anteprima.length
+        },
+        _payload: contattiRaw
+      });
+    } catch (e) { inviaJson(res, 400, { errore: `Errore analisi: ${e.message}` }); }
+    return;
+  }
+
   if (pathname === "/api/import" && req.method === "POST") {
     try {
       const body = await leggiBody(req);
-      const nuoviContatti = Array.isArray(body.contatti) ? body.contatti : [];
-      if (!nuoviContatti.length) {
-        inviaJson(res, 400, { errore: "Nessun contatto trovato nel file" });
-        return;
-      }
-
+      const nuoviContatti = Array.isArray(body._payload) ? body._payload
+        : Array.isArray(body.contatti) ? body.contatti : [];
+      if (!nuoviContatti.length) { inviaJson(res, 400, { errore: "Nessun contatto trovato" }); return; }
       const normalizzati = nuoviContatti.map(arricchisciContatto);
       const mappa = new Map();
-      [...contatti, ...normalizzati].forEach((contatto) => {
-        const chiave = `${contatto.nome.toLowerCase()}|${contatto.azienda.toLowerCase()}`;
-        mappa.set(chiave, contatto);
+      [...contatti, ...normalizzati].forEach((c) => {
+        const k = `${c.nome.toLowerCase()}|${c.azienda.toLowerCase()}`;
+        mappa.set(k, c);
       });
-
       const unificati = Array.from(mappa.values());
       salvaContatti(unificati);
       inviaJson(res, 200, {
@@ -574,9 +822,7 @@ const server = http.createServer(async (req, res) => {
         contatti: unificati,
         riepilogo: riepilogaContatti(unificati)
       });
-    } catch (errore) {
-      inviaJson(res, 400, { errore: "Payload import non valido" });
-    }
+    } catch { inviaJson(res, 400, { errore: "Payload import non valido" }); }
     return;
   }
 

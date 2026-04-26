@@ -19,6 +19,8 @@ const pannelloAi     = document.getElementById("assistant-panel");
 let debounceRicerca  = null;
 let idContattoDrag   = null;
 
+const statoImport = { passo: 1, filesCaricati: [], anteprima: null, stats: null, payload: null, risultati: null };
+
 const COLORI_GRAFICI = [
   "#0d7a6b","#b77118","#a1543e","#445b53",
   "#49af98","#d3a458","#7f8b85","#0a3d35"
@@ -1198,72 +1200,209 @@ async function renderSuggerimentiAi() {
   );
 }
 
-/* ─────────────── ONBOARDING ─────────────── */
+/* ─────────────── ONBOARDING — WIZARD 4 STEP ─────────────── */
+
 function renderOnboarding() {
+  Object.assign(statoImport, { passo: 1, filesCaricati: [], anteprima: null, stats: null, payload: null, risultati: null });
   areaPrincipale.innerHTML = `
     <div class="page-header-row">
       <div class="page-header">
         <span class="eyebrow">Onboarding LinkedIn</span>
         <h1>Importa la lista</h1>
-        <p>Scarica l'export da LinkedIn, carica i file CSV o JSON e AITOBUSINESS classificherà automaticamente ogni contatto.</p>
-      </div>
-      <div class="header-actions">
-        <a class="ghost-btn" href="/contatti" data-link>Vai ai contatti</a>
+        <p>Carica il tuo export LinkedIn — AITOBUSINESS classificherà, scorerà e mapperà ogni contatto automaticamente.</p>
       </div>
     </div>
+    <div id="wizard-root"></div>`;
+  renderPasso();
+}
 
-    <div class="upload-hero-grid">
-      <article class="upload-card">
-        <span class="eyebrow">Upload</span>
-        <h3 style="margin:8px 0 14px">Carica CSV o JSON</h3>
-        <div class="dropzone">
-          <strong>Trascina i file qui o selezionali</strong>
-          <p>Campi supportati: nome, ruolo, azienda, localita, settore.</p>
-          <input type="file" id="file-input" multiple accept=".csv,.json" />
-        </div>
-        <div class="form-actions">
-          <button class="btn" id="importa-file">Importa</button>
-          <button class="ghost-btn" id="carica-demo">Carica esempio</button>
-        </div>
-        <p class="subtle text-sm" id="stato-upload" style="margin-top:10px">Nessun file selezionato.</p>
-        <div class="progress-bar" style="margin-top:10px"><span id="barra-progress"></span></div>
-      </article>
-
-      <article class="upload-card">
-        <span class="eyebrow">Guida</span>
-        <h3 style="margin:8px 0 14px">Come esportare da LinkedIn</h3>
-        <div class="steps-list">
-          <div class="step-item">1. Vai su LinkedIn → <strong>Impostazioni e privacy</strong></div>
-          <div class="step-item">2. Sezione <strong>Privacy dei dati</strong> → "Ottieni una copia dei tuoi dati"</div>
-          <div class="step-item">3. Seleziona <strong>Connections</strong>, richiedi e scarica lo ZIP</div>
-          <div class="step-item">4. Estrai il file CSV e caricalo qui sopra</div>
-        </div>
-        <div style="margin-top:16px;padding:12px 14px;border-radius:var(--r-md);background:var(--c-gold-tint);font-size:13px;color:var(--c-ink-mid)">
-          LinkedIn invia il file via email entro 10 minuti.
-        </div>
-      </article>
+function renderPasso() {
+  const root = document.getElementById("wizard-root");
+  if (!root) return;
+  const labels = ["Carica", "Anteprima", "Importa", "Completato"];
+  const stepBar = `
+    <div class="wizard-nav">
+      ${labels.map((lab, i) => {
+        const n = i + 1;
+        const cls = n < statoImport.passo ? "done" : n === statoImport.passo ? "active" : "";
+        return `
+          ${i > 0 ? '<div class="wizard-connector"></div>' : ""}
+          <div class="wizard-step ${cls}">
+            <span class="step-dot">${n < statoImport.passo ? "✓" : n}</span>
+            <span class="step-label">${lab}</span>
+          </div>`;
+      }).join("")}
     </div>`;
+  let corpo = "";
+  if (statoImport.passo === 1) corpo = htmlPassoCarica();
+  else if (statoImport.passo === 2) corpo = htmlPassoAnteprima();
+  else if (statoImport.passo === 3) corpo = htmlPassoImportando();
+  else corpo = htmlPassoCompletato();
+  root.innerHTML = stepBar + corpo;
+  bindPasso();
+}
 
-  document.getElementById("file-input")?.addEventListener("change", e => {
-    document.getElementById("stato-upload").textContent = `${e.target.files.length} file selezionati.`;
-    document.getElementById("barra-progress").style.width = "40%";
+/* ── Step 1: Carica ── */
+function htmlPassoCarica() {
+  const filesHtml = statoImport.filesCaricati.map(f =>
+    `<div class="file-chip"><span>📄 ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`
+  ).join("");
+  return `
+    <div class="wizard-card">
+      <div class="upload-zone" id="upload-zone">
+        <div class="upload-zone-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <strong>Trascina qui i file LinkedIn</strong>
+        <p class="subtle text-sm" style="margin:6px 0 14px">Connections.csv · messages.csv · .json</p>
+        <label class="btn" style="cursor:pointer">
+          Seleziona file
+          <input type="file" id="file-input" multiple accept=".csv,.json,.txt" style="position:absolute;opacity:0;width:0;height:0">
+        </label>
+      </div>
+
+      <div id="files-list" style="margin-top:10px">${filesHtml}</div>
+
+      <details class="guide-accordion">
+        <summary class="guide-toggle">📖 Come esportare da LinkedIn</summary>
+        <div class="guide-body">
+          <div class="steps-list">
+            <div class="step-item">1. Vai su LinkedIn → <strong>Impostazioni e privacy</strong></div>
+            <div class="step-item">2. <strong>Privacy dei dati</strong> → "Ottieni una copia dei tuoi dati"</div>
+            <div class="step-item">3. Seleziona <strong>Connections</strong> (opz. Messages) e richiedi l'export</div>
+            <div class="step-item">4. Scarica lo ZIP dalla mail, estrai i CSV e caricali qui</div>
+          </div>
+          <div class="guide-tip">💡 LinkedIn invia il file entro ~10 minuti via email</div>
+        </div>
+      </details>
+
+      <div class="wizard-actions">
+        <button class="ghost-btn" id="btn-carica-demo">Carica contatto demo</button>
+        <button class="btn" id="btn-analizza" ${statoImport.filesCaricati.length ? "" : "disabled"}>Analizza →</button>
+      </div>
+    </div>`;
+}
+
+/* ── Step 2: Anteprima ── */
+function htmlPassoAnteprima() {
+  const { anteprima, stats } = statoImport;
+  if (!anteprima || !stats) return `<div class="wizard-card"><p>Nessun dato disponibile.</p></div>`;
+  const banner = stats.trovati > 300
+    ? `<div class="info-banner">📋 Mostro i primi 300 su ${stats.trovati} trovati. Saranno importati tutti.</div>` : "";
+  return `
+    <div class="wizard-card">
+      <div class="import-stats-grid">
+        ${importStatCard(stats.trovati, "Trovati", "metric-ink")}
+        ${importStatCard(stats.nuovi, "Nuovi", "metric-accent")}
+        ${importStatCard(stats.duplicati, "Duplicati", "metric-muted")}
+        ${importStatCard(stats.partner, "Partner", "metric-gold")}
+        ${importStatCard(stats.clienti, "Clienti", "")}
+      </div>
+      ${banner}
+      <div class="table-wrap preview-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th><th>Ruolo</th><th>Azienda</th>
+              <th>Tipo</th><th>Priorità</th><th>Score</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${anteprima.map(c => `
+              <tr class="${c.isDuplicate ? "row-dup" : ""}">
+                <td>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span class="avatar" style="width:28px;height:28px;font-size:10px">${iniziali(c.nome)}</span>
+                    <div>
+                      <strong style="font-size:13px">${escapeHtml(c.nome)}</strong>
+                      <span class="subtle text-xs" style="display:block">${escapeHtml(c.localita||"")}</span>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-sm">${escapeHtml(c.ruolo)}</td>
+                <td class="text-sm">${escapeHtml(c.azienda)}</td>
+                <td><span class="pill ${c.tipologiaContatto==="Potenziale Partner"?"pill-partner":"pill-cliente"}">${c.tipologiaContatto==="Potenziale Partner"?"Partner":"Cliente"}</span></td>
+                <td><span class="pill pill-${c.livelloPriorita.toLowerCase()}">${escapeHtml(c.livelloPriorita)}</span></td>
+                <td class="text-sm" style="font-weight:700">${c.punteggioLead}</td>
+                <td>${c.isDuplicate?'<span class="badge-dup">Dup</span>':""}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="wizard-actions">
+        <button class="ghost-btn" id="btn-indietro">← Indietro</button>
+        <button class="btn" id="btn-importa">Importa ${stats.nuovi} nuovi →</button>
+      </div>
+    </div>`;
+}
+
+/* ── Step 3: Importando ── */
+function htmlPassoImportando() {
+  return `
+    <div class="wizard-card wizard-center">
+      <div class="spinner" style="margin:0 auto 24px"></div>
+      <h3>Importazione in corso…</h3>
+      <p class="subtle" style="margin-top:8px">Classifico i lead, calcolo i punteggi e aggiorno la pipeline.</p>
+      <div class="progress-bar" style="margin-top:24px"><span id="barra-import" style="width:5%"></span></div>
+    </div>`;
+}
+
+/* ── Step 4: Completato ── */
+function htmlPassoCompletato() {
+  const r = statoImport.risultati || {};
+  return `
+    <div class="wizard-card wizard-center">
+      <div class="success-checkmark">✅</div>
+      <h2 style="margin:16px 0 6px">Import completato!</h2>
+      <p class="subtle">I tuoi contatti LinkedIn sono pronti nella piattaforma.</p>
+      <div class="import-stats-grid" style="margin:24px 0">
+        ${importStatCard(r.importati||0, "Importati", "metric-accent")}
+        ${importStatCard(r.totale||0, "Totale CRM", "metric-ink")}
+      </div>
+      <div class="wizard-actions" style="justify-content:center;flex-wrap:wrap">
+        <a class="btn" href="/contatti" data-link>Vai ai Contatti</a>
+        <a class="ghost-btn" href="/pipeline" data-link>Apri Pipeline</a>
+        <button class="ghost-btn" id="btn-nuovo-import">Nuovo Import</button>
+      </div>
+    </div>`;
+}
+
+function importStatCard(val, label, cls = "") {
+  return `<div class="import-stat-card ${cls}"><strong>${val}</strong><span>${label}</span></div>`;
+}
+
+/* ── Bindings per ogni step ── */
+function bindPasso() {
+  // Step 1
+  const fileInput = document.getElementById("file-input");
+  const btnAnalizza = document.getElementById("btn-analizza");
+  const uploadZone = document.getElementById("upload-zone");
+
+  fileInput?.addEventListener("change", e => {
+    statoImport.filesCaricati = Array.from(e.target.files);
+    aggiornaListaFile();
+    if (btnAnalizza) btnAnalizza.disabled = !statoImport.filesCaricati.length;
   });
 
-  document.getElementById("importa-file")?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Importo…", async () => {
-      const files = Array.from(document.getElementById("file-input").files || []);
-      if (!files.length) { mostraToast("Seleziona almeno un file"); return; }
-      const contatti = await parseUploadFiles(files);
-      const r = await api("/api/import", { method:"POST", body: JSON.stringify({ contatti }) });
-      statoApp.contatti = r.contatti; statoApp.riepilogo = r.riepilogo;
-      aggiornaMetaSidebar();
-      document.getElementById("stato-upload").textContent = `${r.importati} contatti importati.`;
-      document.getElementById("barra-progress").style.width = "100%";
-      mostraToast("Import completato");
-    })
+  uploadZone?.addEventListener("dragover", e => { e.preventDefault(); uploadZone.classList.add("drag-over"); });
+  uploadZone?.addEventListener("dragleave", () => uploadZone.classList.remove("drag-over"));
+  uploadZone?.addEventListener("drop", e => {
+    e.preventDefault(); uploadZone.classList.remove("drag-over");
+    const accettati = [".csv",".json",".txt"];
+    statoImport.filesCaricati = Array.from(e.dataTransfer.files)
+      .filter(f => accettati.some(ext => f.name.toLowerCase().endsWith(ext)));
+    aggiornaListaFile();
+    if (btnAnalizza) btnAnalizza.disabled = !statoImport.filesCaricati.length;
+  });
+
+  btnAnalizza?.addEventListener("click", e =>
+    conBottone(e.currentTarget, "Analizzo…", analizzaFiles)
   );
 
-  document.getElementById("carica-demo")?.addEventListener("click", e =>
+  document.getElementById("btn-carica-demo")?.addEventListener("click", e =>
     conBottone(e.currentTarget, "Carico…", async () => {
       const r = await api("/api/import", { method:"POST", body: JSON.stringify({ contatti: [{
         nome:"Sara Ferri", ruolo:"Partnership Manager", azienda:"Growth Studio",
@@ -1271,46 +1410,69 @@ function renderOnboarding() {
       }] }) });
       statoApp.contatti = r.contatti; statoApp.riepilogo = r.riepilogo;
       aggiornaMetaSidebar();
-      document.getElementById("stato-upload").textContent = "Contatto demo importato.";
-      document.getElementById("barra-progress").style.width = "100%";
-      mostraToast("Demo importato");
+      mostraToast("Contatto demo importato");
+      navigate("/contatti");
     })
   );
-}
 
-/* ─────────────── FILE UPLOAD / CSV PARSE ─────────────── */
-async function parseUploadFiles(files) {
-  const contatti = [];
-  for (const f of files) {
-    const text = await f.text();
-    if (f.name.toLowerCase().endsWith(".json")) {
-      const d = JSON.parse(text);
-      contatti.push(...(Array.isArray(d) ? d : d.contatti || []));
-    } else {
-      contatti.push(...parseCsv(text));
-    }
-  }
-  return contatti;
-}
-
-function parseCsv(text) {
-  const righe = text.split(/\r?\n/).filter(Boolean);
-  if (righe.length < 2) return [];
-  const head = righe[0].split(",").map(h => h.trim().toLowerCase());
-  return righe.slice(1).map(riga => {
-    const vals = riga.split(",").map(v => v.trim());
-    const r = {};
-    head.forEach((h, i) => r[h] = vals[i] || "");
-    return {
-      nome:        r.nome || r.name || "Contatto importato",
-      ruolo:       r.ruolo || r.role || "—",
-      azienda:     r.azienda || r.company || "—",
-      localita:    r.localita || r.location || "",
-      settore:     r.settore || r.industry || "",
-      punteggioLead: Number(r.punteggiolead || r.leadscore || 50),
-      stato:       r.stato || "Da contattare"
-    };
+  // Step 2
+  document.getElementById("btn-indietro")?.addEventListener("click", () => {
+    statoImport.passo = 1; renderPasso(); bindNav();
   });
+  document.getElementById("btn-importa")?.addEventListener("click", () => eseguiImport());
+
+  // Step 4
+  document.getElementById("btn-nuovo-import")?.addEventListener("click", () => {
+    Object.assign(statoImport, { passo:1, filesCaricati:[], anteprima:null, stats:null, payload:null, risultati:null });
+    renderPasso(); bindNav();
+  });
+
+  bindNav();
+}
+
+function aggiornaListaFile() {
+  const el = document.getElementById("files-list");
+  if (!el) return;
+  el.innerHTML = statoImport.filesCaricati.map(f =>
+    `<div class="file-chip"><span>📄 ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`
+  ).join("");
+}
+
+async function analizzaFiles() {
+  const files = statoImport.filesCaricati;
+  if (!files.length) { mostraToast("Seleziona almeno un file"); return; }
+  const filesPayload = await Promise.all(files.map(async f => ({ nome: f.name, contenuto: await f.text() })));
+  const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
+  statoImport.anteprima = res.anteprima;
+  statoImport.stats     = res.stats;
+  statoImport.payload   = res._payload;
+  statoImport.passo = 2;
+  renderPasso(); bindNav();
+}
+
+async function eseguiImport() {
+  statoImport.passo = 3; renderPasso();
+  const barra = document.getElementById("barra-import");
+  let p = 5;
+  const tick = setInterval(() => {
+    p = Math.min(88, p + Math.random() * 12);
+    if (barra) barra.style.width = `${p}%`;
+  }, 250);
+  try {
+    const res = await api("/api/import", { method:"POST", body: JSON.stringify({ _payload: statoImport.payload }) });
+    clearInterval(tick);
+    if (barra) barra.style.width = "100%";
+    statoApp.contatti = res.contatti; statoApp.riepilogo = res.riepilogo;
+    aggiornaMetaSidebar();
+    await new Promise(r => setTimeout(r, 400));
+    statoImport.risultati = res;
+    statoImport.passo = 4;
+    renderPasso(); bindNav();
+  } catch (e) {
+    clearInterval(tick);
+    mostraToast(`Errore: ${e.message}`);
+    statoImport.passo = 2; renderPasso();
+  }
 }
 
 /* ─────────────── ROUTING ─────────────── */
