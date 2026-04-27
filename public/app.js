@@ -1296,19 +1296,19 @@ function htmlPassoAnteprima() {
   return `
     <div class="wizard-card">
       <div class="import-stats-grid">
-        ${importStatCard(stats.trovati, "Trovati", "metric-ink")}
-        ${importStatCard(stats.nuovi, "Nuovi", "metric-accent")}
-        ${importStatCard(stats.duplicati, "Duplicati", "metric-muted")}
-        ${importStatCard(stats.partner, "Partner", "metric-gold")}
-        ${importStatCard(stats.clienti, "Clienti", "")}
+        ${importStatCard(stats.trovati,      "Contatti trovati", "metric-ink")}
+        ${importStatCard(stats.nuovi,        "Nuovi",            "metric-accent")}
+        ${importStatCard(stats.duplicati,    "Già presenti",     "metric-muted")}
+        ${importStatCard(stats.conMessaggi || 0, "Con messaggi", "metric-gold")}
+        ${importStatCard(stats.conInvito   || 0, "Invitati",     "")}
       </div>
       ${banner}
       <div class="table-wrap preview-scroll">
         <table>
           <thead>
             <tr>
-              <th>Nome</th><th>Ruolo</th><th>Azienda</th>
-              <th>Tipo</th><th>Priorità</th><th>Score</th><th></th>
+              <th>Nome</th><th>Ruolo · Azienda</th>
+              <th>Score</th><th>Msg</th><th>Stato</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -1319,16 +1319,18 @@ function htmlPassoAnteprima() {
                     <span class="avatar" style="width:28px;height:28px;font-size:10px">${iniziali(c.nome)}</span>
                     <div>
                       <strong style="font-size:13px">${escapeHtml(c.nome)}</strong>
-                      <span class="subtle text-xs" style="display:block">${escapeHtml(c.localita||"")}</span>
+                      ${c.linkedinUrl ? `<a href="${escapeHtml(c.linkedinUrl)}" target="_blank" class="subtle text-xs" style="display:block;text-decoration:none">↗ LinkedIn</a>` : ""}
                     </div>
                   </div>
                 </td>
-                <td class="text-sm">${escapeHtml(c.ruolo)}</td>
-                <td class="text-sm">${escapeHtml(c.azienda)}</td>
-                <td><span class="pill ${c.tipologiaContatto==="Potenziale Partner"?"pill-partner":"pill-cliente"}">${c.tipologiaContatto==="Potenziale Partner"?"Partner":"Cliente"}</span></td>
-                <td><span class="pill pill-${c.livelloPriorita.toLowerCase()}">${escapeHtml(c.livelloPriorita)}</span></td>
-                <td class="text-sm" style="font-weight:700">${c.punteggioLead}</td>
-                <td>${c.isDuplicate?'<span class="badge-dup">Dup</span>':""}</td>
+                <td class="text-sm">
+                  <div>${escapeHtml(c.ruolo)}</div>
+                  <div class="subtle text-xs">${escapeHtml(c.azienda)}</div>
+                </td>
+                <td style="font-weight:700;color:var(--c-green)">${c.punteggioLead}</td>
+                <td class="text-sm">${c.messaggiCount > 0 ? `<span style="color:var(--c-green)">💬 ${c.messaggiCount}</span>` : `<span class="subtle">—</span>`}</td>
+                <td><span class="pill ${c.tipologiaContatto==="Potenziale Partner"?"pill-partner":"pill-cliente"}" style="font-size:10px">${c.tipologiaContatto==="Potenziale Partner"?"Partner":"Cliente"}</span></td>
+                <td>${c.isDuplicate ? '<span class="badge-dup">già presente</span>' : ""}</td>
               </tr>`).join("")}
           </tbody>
         </table>
