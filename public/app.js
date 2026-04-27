@@ -1244,9 +1244,10 @@ function renderPasso() {
 
 /* ── Step 1: Carica ── */
 function htmlPassoCarica() {
-  const filesHtml = statoImport.filesCaricati.map(f =>
-    `<div class="file-chip"><span>📄 ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`
-  ).join("");
+  const filesHtml = statoImport.filesCaricati.map(f => {
+    const icona = f.name.toLowerCase().endsWith(".zip") ? "🗜️" : "📄";
+    return `<div class="file-chip"><span>${icona} ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`;
+  }).join("");
   return `
     <div class="wizard-card">
       <div class="upload-zone" id="upload-zone">
@@ -1257,10 +1258,10 @@ function htmlPassoCarica() {
           </svg>
         </div>
         <strong>Trascina qui i file LinkedIn</strong>
-        <p class="subtle text-sm" style="margin:6px 0 14px">Connections.csv · messages.csv · .json</p>
+        <p class="subtle text-sm" style="margin:6px 0 14px">LinkedIn.zip · Connections.csv · messages.csv · .json</p>
         <label class="btn" style="cursor:pointer">
           Seleziona file
-          <input type="file" id="file-input" multiple accept=".csv,.json,.txt" style="position:absolute;opacity:0;width:0;height:0">
+          <input type="file" id="file-input" multiple accept=".zip,.csv,.json,.txt" style="position:absolute;opacity:0;width:0;height:0">
         </label>
       </div>
 
@@ -1438,10 +1439,117 @@ function aggiornaListaFile() {
   ).join("");
 }
 
+/* ─────────────── ZIP PARSER (puro JS, zero dipendenze) ─────────────── */
+
+async function extraiZIP(arrayBuffer) {
+  const view  = new DataView(arrayBuffer);
+  const bytes = new Uint8Array(arrayBuffer);
+  const dec   = new TextDecoder("utf-8");
+
+  // Trova EOCD (End of Central Directory) — firma 0x06054b50
+  let eocdPos = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65558); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocdPos = i; break; }
+  }
+  if (eocdPos === -1) throw new Error("File ZIP non valido o corrotto");
+
+  const numEntries = view.getUint16(eocdPos + 8, true);
+  let   cdPos      = view.getUint32(eocdPos + 16, true);
+  const files      = {};
+  const rilevanti  = [".csv", ".json", ".txt"];
+
+  for (let i = 0; i < numEntries; i++) {
+    if (view.getUint32(cdPos, true) !== 0x02014b50) break;
+
+    const method      = view.getUint16(cdPos + 10, true);
+    const compSize    = view.getUint32(cdPos + 20, true);
+    const fnLen       = view.getUint16(cdPos + 28, true);
+    const exLen       = view.getUint16(cdPos + 30, true);
+    const cmLen       = view.getUint16(cdPos + 32, true);
+    const localOffset = view.getUint32(cdPos + 42, true);
+    const filename    = dec.decode(bytes.slice(cdPos + 46, cdPos + 46 + fnLen));
+    cdPos += 46 + fnLen + exLen + cmLen;
+
+    const baseName = filename.split("/").pop().toLowerCase();
+    if (filename.endsWith("/") || compSize === 0) continue;
+    if (!rilevanti.some(e => baseName.endsWith(e))) continue;
+
+    // Leggi local file header per calcolare offset dati esatto
+    const localFnLen  = view.getUint16(localOffset + 26, true);
+    const localExLen  = view.getUint16(localOffset + 28, true);
+    const dataStart   = localOffset + 30 + localFnLen + localExLen;
+    const compData    = bytes.slice(dataStart, dataStart + compSize);
+
+    try {
+      let testo;
+      if (method === 0) {
+        testo = dec.decode(compData);                       // Stored
+      } else if (method === 8) {                           // Deflate
+        const ds     = new DecompressionStream("deflate-raw");
+        const writer = ds.writable.getWriter();
+        const reader = ds.readable.getReader();
+        writer.write(compData);
+        writer.close();
+        const chunks = [];
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const totLen   = chunks.reduce((s, c) => s + c.length, 0);
+        const combined = new Uint8Array(totLen);
+        let   off      = 0;
+        for (const c of chunks) { combined.set(c, off); off += c.length; }
+        testo = dec.decode(combined);
+      }
+      if (testo) files[baseName] = testo;
+    } catch { /* file corrotto — ignora */ }
+  }
+
+  return files;
+}
+
 async function analizzaFiles() {
   const files = statoImport.filesCaricati;
   if (!files.length) { mostraToast("Seleziona almeno un file"); return; }
-  const filesPayload = await Promise.all(files.map(async f => ({ nome: f.name, contenuto: await f.text() })));
+
+  // Mostra stato estrazione ZIP se presente
+  const haZIP = files.some(f => f.name.toLowerCase().endsWith(".zip"));
+  if (haZIP) {
+    const root = document.getElementById("wizard-root");
+    root?.insertAdjacentHTML("afterbegin",
+      `<div class="info-banner" id="zip-status" style="margin-bottom:12px">⏳ Estrazione ZIP in corso…</div>`);
+  }
+
+  const filesPayload = [];
+  const errori = [];
+
+  for (const f of files) {
+    if (f.name.toLowerCase().endsWith(".zip")) {
+      try {
+        const estratti = await extraiZIP(await f.arrayBuffer());
+        const trovati  = Object.entries(estratti);
+        if (!trovati.length) {
+          errori.push(`${f.name}: nessun CSV/JSON trovato. LinkedIn ZIP deve contenere Connections.csv o messages.csv.`);
+          continue;
+        }
+        for (const [nome, contenuto] of trovati) {
+          filesPayload.push({ nome, contenuto });
+        }
+        mostraToast(`ZIP estratto: ${trovati.length} file trovati`);
+      } catch (e) {
+        errori.push(`${f.name}: ${e.message}`);
+      }
+    } else {
+      filesPayload.push({ nome: f.name, contenuto: await f.text() });
+    }
+  }
+
+  document.getElementById("zip-status")?.remove();
+
+  if (errori.length) mostraToast(errori[0]);
+  if (!filesPayload.length) { mostraToast("Nessun dato da importare"); return; }
+
   const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
   statoImport.anteprima = res.anteprima;
   statoImport.stats     = res.stats;
