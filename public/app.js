@@ -1394,7 +1394,7 @@ function bindPasso() {
   uploadZone?.addEventListener("dragleave", () => uploadZone.classList.remove("drag-over"));
   uploadZone?.addEventListener("drop", e => {
     e.preventDefault(); uploadZone.classList.remove("drag-over");
-    const accettati = [".csv",".json",".txt"];
+    const accettati = [".zip", ".csv", ".json", ".txt"];
     statoImport.filesCaricati = Array.from(e.dataTransfer.files)
       .filter(f => accettati.some(ext => f.name.toLowerCase().endsWith(ext)));
     aggiornaListaFile();
@@ -1436,9 +1436,11 @@ function bindPasso() {
 function aggiornaListaFile() {
   const el = document.getElementById("files-list");
   if (!el) return;
-  el.innerHTML = statoImport.filesCaricati.map(f =>
-    `<div class="file-chip"><span>📄 ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`
-  ).join("");
+  el.innerHTML = statoImport.filesCaricati.map(f => {
+    const icona = f.name.toLowerCase().endsWith(".zip") ? "🗜️" : "📄";
+    const dim   = f.size > 1024 * 1024 ? `${(f.size/1024/1024).toFixed(1)} MB` : `${(f.size/1024).toFixed(1)} KB`;
+    return `<div class="file-chip"><span>${icona} ${escapeHtml(f.name)}</span><span class="subtle text-xs">${dim}</span></div>`;
+  }).join("");
 }
 
 /* ─────────────── ZIP PARSER (puro JS, zero dipendenze) ─────────────── */
@@ -1515,13 +1517,22 @@ async function analizzaFiles() {
   const files = statoImport.filesCaricati;
   if (!files.length) { mostraToast("Seleziona almeno un file"); return; }
 
-  // Mostra stato estrazione ZIP se presente
   const haZIP = files.some(f => f.name.toLowerCase().endsWith(".zip"));
-  if (haZIP) {
-    const root = document.getElementById("wizard-root");
-    root?.insertAdjacentHTML("afterbegin",
-      `<div class="info-banner" id="zip-status" style="margin-bottom:12px">⏳ Estrazione ZIP in corso…</div>`);
-  }
+  const root  = document.getElementById("wizard-root");
+
+  const setStatus = (msg) => {
+    let el = document.getElementById("zip-status");
+    if (!el && msg) {
+      root?.insertAdjacentHTML("afterbegin",
+        `<div class="info-banner" id="zip-status" style="margin-bottom:12px">${msg}</div>`);
+    } else if (el && msg) {
+      el.textContent = msg;
+    } else if (el && !msg) {
+      el.remove();
+    }
+  };
+
+  if (haZIP) setStatus("⏳ Lettura ZIP in corso…");
 
   const filesPayload = [];
   const errori = [];
@@ -1529,35 +1540,44 @@ async function analizzaFiles() {
   for (const f of files) {
     if (f.name.toLowerCase().endsWith(".zip")) {
       try {
-        const estratti = await extraiZIP(await f.arrayBuffer());
+        setStatus(`⏳ Estrazione di ${f.name}… (potrebbe richiedere qualche secondo)`);
+        const buffer   = await f.arrayBuffer();
+        setStatus(`🗜️ Decompressione in corso…`);
+        const estratti = await extraiZIP(buffer);
         const trovati  = Object.entries(estratti);
         if (!trovati.length) {
-          errori.push(`${f.name}: nessun CSV/JSON trovato. LinkedIn ZIP deve contenere Connections.csv o messages.csv.`);
+          errori.push(`Nessun CSV trovato nel ZIP. Assicurati che sia l'export originale di LinkedIn.`);
           continue;
         }
+        setStatus(`✅ Estratti ${trovati.length} file — analisi in corso…`);
         for (const [nome, contenuto] of trovati) {
           filesPayload.push({ nome, contenuto });
         }
-        mostraToast(`ZIP estratto: ${trovati.length} file trovati`);
       } catch (e) {
-        errori.push(`${f.name}: ${e.message}`);
+        errori.push(`Errore ZIP: ${e.message}`);
       }
     } else {
       filesPayload.push({ nome: f.name, contenuto: await f.text() });
     }
   }
 
-  document.getElementById("zip-status")?.remove();
+  if (errori.length) { setStatus(null); mostraToast(errori[0]); return; }
+  if (!filesPayload.length) { setStatus(null); mostraToast("Nessun dato da importare"); return; }
 
-  if (errori.length) mostraToast(errori[0]);
-  if (!filesPayload.length) { mostraToast("Nessun dato da importare"); return; }
+  setStatus("📊 Analisi contatti in corso…");
 
-  const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
-  statoImport.anteprima = res.anteprima;
-  statoImport.stats     = res.stats;
-  statoImport.payload   = res._payload;
-  statoImport.passo = 2;
-  renderPasso(); bindNav();
+  try {
+    const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
+    setStatus(null);
+    statoImport.anteprima = res.anteprima;
+    statoImport.stats     = res.stats;
+    statoImport.payload   = res._payload;
+    statoImport.passo = 2;
+    renderPasso(); bindNav();
+  } catch(e) {
+    setStatus(null);
+    mostraToast(`Errore analisi: ${e.message}`);
+  }
 }
 
 async function eseguiImport() {
