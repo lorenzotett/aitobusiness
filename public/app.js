@@ -1445,6 +1445,34 @@ function aggiornaListaFile() {
 
 /* ─────────────── ZIP PARSER (puro JS, zero dipendenze) ─────────────── */
 
+// Solo i file LinkedIn che usiamo realmente (evita di estrarre reactions 1MB, ads 747KB, ecc.)
+const ZIP_FILES_UTILI = new Set([
+  "connections.csv", "messages.csv", "profile.csv",
+  "invitations.csv", "importedcontacts.csv",
+  "positions.csv", "skills.csv", "education.csv"
+]);
+
+async function decomprimi(bytes, compData, method) {
+  if (method === 0) return new TextDecoder("utf-8").decode(compData); // Stored
+  if (method !== 8) return null; // Metodo non supportato
+  const ds = new DecompressionStream("deflate-raw");
+  const writer = ds.writable.getWriter();
+  const reader = ds.readable.getReader();
+  writer.write(compData);
+  writer.close();
+  const chunks = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const totLen = chunks.reduce((s, c) => s + c.length, 0);
+  const combined = new Uint8Array(totLen);
+  let off = 0;
+  for (const c of chunks) { combined.set(c, off); off += c.length; }
+  return new TextDecoder("utf-8").decode(combined);
+}
+
 async function extraiZIP(arrayBuffer) {
   const view  = new DataView(arrayBuffer);
   const bytes = new Uint8Array(arrayBuffer);
@@ -1460,7 +1488,6 @@ async function extraiZIP(arrayBuffer) {
   const numEntries = view.getUint16(eocdPos + 8, true);
   let   cdPos      = view.getUint32(eocdPos + 16, true);
   const files      = {};
-  const rilevanti  = [".csv", ".json", ".txt"];
 
   for (let i = 0; i < numEntries; i++) {
     if (view.getUint32(cdPos, true) !== 0x02014b50) break;
@@ -1474,43 +1501,146 @@ async function extraiZIP(arrayBuffer) {
     const filename    = dec.decode(bytes.slice(cdPos + 46, cdPos + 46 + fnLen));
     cdPos += 46 + fnLen + exLen + cmLen;
 
-    const baseName = filename.split("/").pop().toLowerCase();
+    const baseName = filename.split("/").pop().toLowerCase().trim();
     if (filename.endsWith("/") || compSize === 0) continue;
-    if (!rilevanti.some(e => baseName.endsWith(e))) continue;
+    // Estrai SOLO i file che usiamo — evita reactions/ads/searchqueries (MB inutili)
+    if (!ZIP_FILES_UTILI.has(baseName)) continue;
 
-    // Leggi local file header per calcolare offset dati esatto
-    const localFnLen  = view.getUint16(localOffset + 26, true);
-    const localExLen  = view.getUint16(localOffset + 28, true);
-    const dataStart   = localOffset + 30 + localFnLen + localExLen;
-    const compData    = bytes.slice(dataStart, dataStart + compSize);
+    const localFnLen = view.getUint16(localOffset + 26, true);
+    const localExLen = view.getUint16(localOffset + 28, true);
+    const dataStart  = localOffset + 30 + localFnLen + localExLen;
+    const compData   = bytes.slice(dataStart, dataStart + compSize);
 
     try {
-      let testo;
-      if (method === 0) {
-        testo = dec.decode(compData);                       // Stored
-      } else if (method === 8) {                           // Deflate
-        const ds     = new DecompressionStream("deflate-raw");
-        const writer = ds.writable.getWriter();
-        const reader = ds.readable.getReader();
-        writer.write(compData);
-        writer.close();
-        const chunks = [];
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const totLen   = chunks.reduce((s, c) => s + c.length, 0);
-        const combined = new Uint8Array(totLen);
-        let   off      = 0;
-        for (const c of chunks) { combined.set(c, off); off += c.length; }
-        testo = dec.decode(combined);
-      }
+      const testo = await decomprimi(bytes, compData, method);
       if (testo) files[baseName] = testo;
     } catch { /* file corrotto — ignora */ }
   }
 
   return files;
+}
+
+/* ─────────────── PRE-AGGREGAZIONE MESSAGGI (browser) ─────────────── */
+// Converte messages.csv (3MB) in un JSON compatto (~30KB) prima di inviarlo al server
+
+function normNomeBrowser(s) {
+  return (s || "").toLowerCase().trim()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function profiloNomeDaCSV(testo) {
+  const righe = testo.replace(/^﻿/, "").split(/\r?\n/).filter(r => r.trim());
+  if (righe.length < 2) return "";
+  // Header: First Name,Last Name,...
+  const cols = righe[0].split(",").map(c => c.toLowerCase().replace(/[" ]+/g, ""));
+  const vals = righe[1].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+  const iF = cols.findIndex(c => c.includes("firstname"));
+  const iL = cols.findIndex(c => c.includes("lastname"));
+  return [iF >= 0 ? vals[iF] : "", iL >= 0 ? vals[iL] : ""].filter(Boolean).join(" ");
+}
+
+function aggregaMessaggiBrowser(csvText, nomeUtente) {
+  const testo  = csvText.replace(/^﻿/, "");
+  const nomeU  = normNomeBrowser(nomeUtente || "");
+  const parPos = ["interessato","voglio","fissiamo","volentieri","perfetto","ottimo","certo",
+    "assolutamente","disponibile","procediamo","sounds good","would love","interested",
+    "great","yes","sure","absolutely","grazie","quando"];
+  const parNeg = ["no grazie","non sono interessato","spam","stop","remove me",
+    "unsubscribe","not interested","no thanks"];
+
+  // Parser CSV carattere per carattere (gestisce campi multiriga come il body del messaggio)
+  let pos = 0; const len = testo.length;
+
+  function leggiCampo() {
+    if (pos >= len) return "";
+    let campo = "";
+    if (testo[pos] === '"') {
+      pos++;
+      while (pos < len) {
+        if (testo[pos] === '"') {
+          pos++;
+          if (pos < len && testo[pos] === '"') { campo += '"'; pos++; }
+          else break;
+        } else { campo += testo[pos++]; }
+      }
+    } else {
+      while (pos < len && testo[pos] !== "," && testo[pos] !== "\n" && testo[pos] !== "\r") {
+        campo += testo[pos++];
+      }
+    }
+    return campo.trim();
+  }
+
+  function leggiRiga() {
+    const row = [];
+    while (pos < len) {
+      row.push(leggiCampo());
+      if (pos < len && testo[pos] === ",") { pos++; continue; }
+      if (pos < len && testo[pos] === "\r") pos++;
+      if (pos < len && testo[pos] === "\n") { pos++; break; }
+      break;
+    }
+    return row;
+  }
+
+  // Trova header (salta eventuali righe di note prima)
+  let header = [];
+  for (let t = 0; t < 5 && pos < len; t++) {
+    const row = leggiRiga();
+    const low = row.map(f => f.toLowerCase().replace(/[\s"_\-]+/g, ""));
+    if (low.some(f => f.includes("conversationid"))) { header = low; break; }
+  }
+  if (!header.length) return [];
+
+  const ci = (name) => header.findIndex(f => f.includes(name.replace(/[\s_\-]+/g, "").toLowerCase()));
+  const iFrom    = ci("from");
+  const iFromUrl = ci("senderprofileurl");
+  const iTo      = ci("to");
+  const iToUrl   = ci("recipientprofileurls");
+  const iDate    = ci("date");
+  const iContent = ci("content");
+
+  const byUrl  = new Map();
+  const byNome = new Map();
+
+  while (pos < len) {
+    const row = leggiRiga();
+    if (!row.length || (row.length === 1 && !row[0])) continue;
+    const g = (i) => (i >= 0 && row[i]) ? row[i].trim() : "";
+
+    const from    = g(iFrom);
+    const fromUrl = g(iFromUrl);
+    const to      = g(iTo);
+    const toUrl   = g(iToUrl).split(",")[0].trim();
+    const date    = g(iDate).slice(0, 10);       // YYYY-MM-DD
+    const content = g(iContent).toLowerCase();
+
+    if (!from) continue;
+    const fromNorm   = normNomeBrowser(from);
+    const fromIsUser = nomeU && (fromNorm === nomeU ||
+      (nomeU.split(" ")[0].length > 2 && fromNorm.startsWith(nomeU.split(" ")[0])));
+
+    const otherName = fromIsUser ? to   : from;
+    const otherUrl  = fromIsUser ? toUrl : fromUrl;
+    if (!otherName) continue;
+
+    const map = otherUrl ? byUrl : byNome;
+    const key = otherUrl || normNomeBrowser(otherName);
+    if (!map.has(key)) map.set(key, { nome: otherName, url: otherUrl || "", count: 0, ultimaData: "", sentimento: "Neutro" });
+    const s = map.get(key);
+    s.count++;
+    if (date > s.ultimaData) s.ultimaData = date;
+    if (s.sentimento !== "Positivo") {
+      if (parPos.some(p => content.includes(p))) s.sentimento = "Positivo";
+      else if (parNeg.some(p => content.includes(p))) s.sentimento = "Negativo";
+    }
+  }
+
+  const result = [];
+  for (const [, s] of byUrl)  result.push({ ...s, tipoKey: "url" });
+  for (const [, s] of byNome) result.push({ ...s, tipoKey: "nome" });
+  return result;
 }
 
 async function analizzaFiles() {
@@ -1540,18 +1670,32 @@ async function analizzaFiles() {
   for (const f of files) {
     if (f.name.toLowerCase().endsWith(".zip")) {
       try {
-        setStatus(`⏳ Estrazione di ${f.name}… (potrebbe richiedere qualche secondo)`);
+        setStatus(`🗜️ Estrazione "${f.name}"… (qualche secondo)`);
         const buffer   = await f.arrayBuffer();
-        setStatus(`🗜️ Decompressione in corso…`);
         const estratti = await extraiZIP(buffer);
         const trovati  = Object.entries(estratti);
         if (!trovati.length) {
-          errori.push(`Nessun CSV trovato nel ZIP. Assicurati che sia l'export originale di LinkedIn.`);
+          errori.push("Nessun file LinkedIn riconosciuto nel ZIP. Carica l'export originale di LinkedIn.");
           continue;
         }
-        setStatus(`✅ Estratti ${trovati.length} file — analisi in corso…`);
+        setStatus(`📂 Estratti ${trovati.length} file — elaborazione…`);
+
+        // Separa messages.csv dagli altri per pre-aggregarlo nel browser
+        // (evita di inviare 3MB al server — Vercel ha limite 4.5MB)
+        let nomeUtente = "";
+        const profileEntry = trovati.find(([n]) => n === "profile.csv");
+        if (profileEntry) nomeUtente = profiloNomeDaCSV(profileEntry[1]);
+
         for (const [nome, contenuto] of trovati) {
-          filesPayload.push({ nome, contenuto });
+          if (nome === "messages.csv") {
+            setStatus(`💬 Pre-elaborazione messaggi (${(contenuto.length/1024/1024).toFixed(1)} MB)…`);
+            const summary = aggregaMessaggiBrowser(contenuto, nomeUtente);
+            setStatus(`✅ ${summary.length} conversazioni analizzate`);
+            // Invia il riassunto compatto (~30KB) invece del CSV grezzo (3MB)
+            filesPayload.push({ nome: "messages_summary.json", contenuto: JSON.stringify(summary) });
+          } else {
+            filesPayload.push({ nome, contenuto });
+          }
         }
       } catch (e) {
         errori.push(`Errore ZIP: ${e.message}`);
@@ -1564,7 +1708,8 @@ async function analizzaFiles() {
   if (errori.length) { setStatus(null); mostraToast(errori[0]); return; }
   if (!filesPayload.length) { setStatus(null); mostraToast("Nessun dato da importare"); return; }
 
-  setStatus("📊 Analisi contatti in corso…");
+  const totaleKB = Math.round(filesPayload.reduce((s, f) => s + f.contenuto.length, 0) / 1024);
+  setStatus(`📊 Invio dati al server (${totaleKB} KB)…`);
 
   try {
     const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
@@ -1576,7 +1721,7 @@ async function analizzaFiles() {
     renderPasso(); bindNav();
   } catch(e) {
     setStatus(null);
-    mostraToast(`Errore analisi: ${e.message}`);
+    mostraToast(`Errore: ${e.message}`);
   }
 }
 

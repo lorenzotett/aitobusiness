@@ -819,6 +819,21 @@ function parsaFilesImport(files) {
   for (const { nome, contenuto } of files) {
     const baseName = nome.toLowerCase().split("/").pop().trim();
     if (baseName === "profile.csv") continue;
+
+    if (baseName === "messages_summary.json") {
+      // Pre-aggregato dal browser: array di { nome, url, count, ultimaData, sentimento, tipoKey }
+      try {
+        const arr = JSON.parse(contenuto);
+        if (Array.isArray(arr)) {
+          for (const s of arr) {
+            const key = s.url || normalizzaNome(s.nome || "");
+            if (key) mappaMsg.set(key, { ...s, tipoKey: s.tipoKey || (s.url ? "url" : "nome") });
+          }
+        }
+      } catch {}
+      continue;
+    }
+
     if (baseName.endsWith(".json")) {
       try { const d = JSON.parse(contenuto); tutti.push(...(Array.isArray(d) ? d : d.contatti || [])); } catch {}
       continue;
@@ -828,6 +843,7 @@ function parsaFilesImport(files) {
     if (baseName === "connections.csv") {
       tutti.push(...parseLinkedInConnections(contenuto));
     } else if (baseName === "messages.csv") {
+      // Fallback: se per qualche ragione arriva il CSV grezzo (upload diretto, non ZIP)
       mappaMsg = parseLinkedInMessages(contenuto, profilo?.nome || "");
     } else if (baseName === "invitations.csv") {
       mappaInv = parseLinkedInInvitations(contenuto);
