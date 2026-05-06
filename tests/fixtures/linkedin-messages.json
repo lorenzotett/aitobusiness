@@ -1,0 +1,14 @@
+[
+  {
+    "sender_name": "Marco Rinaldi",
+    "recipient_name": "Lorenzo",
+    "date": "2026-04-20T10:30:00Z",
+    "content": "Possiamo fissare una call per parlare del servizio?"
+  },
+  {
+    "sender_name": "Lorenzo",
+    "recipient_name": "Marco Rinaldi",
+    "date": "2026-04-20T11:10:00Z",
+    "content": "Sì, volentieri. Ti mando due slot."
+  }
+]

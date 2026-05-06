@@ -1,10 +1,25 @@
-/* ─────────────── STATO GLOBALE ─────────────── */
 const statoApp = {
   contatti: [],
   riepilogo: null,
   promptAi: {},
   statiPipeline: [],
   offerte: [],
+  limiteZipBytes: 0,
+  sessione: {
+    autenticato: false,
+    utente: null
+  },
+  admin: {
+    utenti: [],
+    riepilogo: null
+  },
+  impostazioniAi: null,
+  importazioneLinkedin: {
+    job: null,
+    records: [],
+    riepilogo: null,
+    filtroFonte: "tutti"
+  },
   filtri: {
     query: "",
     stato: "",
@@ -14,425 +29,425 @@ const statoApp = {
   }
 };
 
+const shellApp = document.querySelector(".app-shell");
+const sidebar = document.querySelector(".sidebar");
 const areaPrincipale = document.getElementById("main-content");
-const pannelloAi     = document.getElementById("assistant-panel");
-let debounceRicerca  = null;
-let idContattoDrag   = null;
+const pannelloAi = document.getElementById("assistant-panel");
+let debounceRicerca = null;
+let idContattoDrag = null;
+const COLORI_GRAFICI = ["#0d7a6b", "#b77118", "#a1543e", "#445b53", "#49af98", "#d3a458", "#7f8b85"];
 
-const statoImport = { passo: 1, filesCaricati: [], anteprima: null, stats: null, payload: null, risultati: null };
-
-const COLORI_GRAFICI = [
-  "#0d7a6b","#b77118","#a1543e","#445b53",
-  "#49af98","#d3a458","#7f8b85","#0a3d35"
-];
-
-/* ─────────────── UTILS ─────────────── */
-function escapeHtml(v = "") {
-  return String(v)
-    .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;").replaceAll("'","&#039;");
+function utenteAdmin() {
+  return ["admin", "owner"].includes(String(statoApp.sessione.utente?.ruolo || "").toLowerCase());
 }
 
-function formattaData(v) {
-  if (!v) return "-";
-  return new Intl.DateTimeFormat("it-IT", { day:"2-digit", month:"short", year:"numeric" })
-    .format(new Date(v));
+function impostaLayout(modalita) {
+  document.body.classList.remove("layout-public", "layout-auth", "layout-admin", "layout-workspace");
+  document.body.classList.add(`layout-${modalita}`);
+  const mostraWorkspace = modalita === "workspace";
+  sidebar.hidden = !mostraWorkspace;
+  pannelloAi.hidden = !mostraWorkspace;
+  shellApp.dataset.layout = modalita;
 }
 
-function oggi() { return new Date().toISOString().slice(0,10); }
+function escapeHtml(valore = "") {
+  return String(valore)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formattaData(valore) {
+  if (!valore) return "-";
+  return new Intl.DateTimeFormat("it-IT", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(new Date(valore));
+}
+
+function oggi() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function iniziali(nome = "") {
-  return nome.split(" ").filter(Boolean).slice(0,2)
-    .map(p => p[0]?.toUpperCase() || "").join("");
+  return nome
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((parte) => parte[0]?.toUpperCase() || "")
+    .join("");
 }
 
 function slugStato(stato = "") {
-  return stato.toLowerCase().replaceAll(" ","-");
+  return stato.toLowerCase().replaceAll(" ", "-");
 }
 
-function mostraToast(msg) {
-  document.querySelector(".toast")?.remove();
-  const t = document.createElement("div");
-  t.className = "toast";
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2800);
+function mostraToast(messaggio) {
+  const esistente = document.querySelector(".toast");
+  if (esistente) esistente.remove();
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = messaggio;
+  document.body.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 2600);
 }
 
-function setBottoneCaricamento(btn, attivo, etichetta) {
-  if (!btn) return;
+function impostaCaricamentoBottone(bottone, attivo, etichetta) {
+  if (!bottone) return;
   if (attivo) {
-    btn.dataset.orig = btn.textContent;
-    btn.disabled = true;
-    btn.classList.add("is-busy");
-    btn.textContent = etichetta || "Attendo...";
-  } else {
-    btn.disabled = false;
-    btn.classList.remove("is-busy");
-    if (btn.dataset.orig) { btn.textContent = btn.dataset.orig; delete btn.dataset.orig; }
+    bottone.dataset.etichettaOriginale = bottone.textContent;
+    bottone.disabled = true;
+    bottone.classList.add("is-busy");
+    bottone.textContent = etichetta || "Attendo...";
+    return;
+  }
+  bottone.disabled = false;
+  bottone.classList.remove("is-busy");
+  if (bottone.dataset.etichettaOriginale) {
+    bottone.textContent = bottone.dataset.etichettaOriginale;
+    delete bottone.dataset.etichettaOriginale;
   }
 }
 
-async function conBottone(btn, label, task) {
+async function conBottoneInCaricamento(bottone, etichetta, task) {
   try {
-    setBottoneCaricamento(btn, true, label);
+    impostaCaricamentoBottone(bottone, true, etichetta);
     return await task();
-  } catch (err) {
-    mostraToast(err.message || "Errore imprevisto");
-    throw err;
+  } catch (errore) {
+    mostraToast(errore.message || "Errore imprevisto");
+    throw errore;
   } finally {
-    setBottoneCaricamento(btn, false);
+    impostaCaricamentoBottone(bottone, false);
   }
 }
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) }
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.errore || "Richiesta fallita");
-  return data;
+async function eseguiLogout(destinazione = "/") {
+  await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
+  statoApp.sessione = { autenticato: false, utente: null };
+  statoApp.admin = { utenti: [], riepilogo: null };
+  statoApp.contatti = [];
+  statoApp.importazioneLinkedin = { job: null, records: [], riepilogo: null, filtroFonte: "tutti" };
+  navigate(destinazione);
 }
 
-function trovaContatto(id)  { return statoApp.contatti.find(c => c.id === id); }
-function trovaOfferta(id)   { return statoApp.offerte.find(o => o.id === id); }
-function offerteProposte(c) { return (c.offerteProposteIds || []).map(trovaOfferta).filter(Boolean); }
+async function api(percorso, opzioni = {}) {
+  const headers = { ...(opzioni.headers || {}) };
+  if (!(opzioni.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  const risposta = await fetch(percorso, {
+    ...opzioni,
+    headers
+  });
+  const payload = await risposta.json();
+  if (!risposta.ok) {
+    const errore = new Error(payload.messaggio || payload.errore || "Richiesta fallita");
+    errore.status = risposta.status;
+    throw errore;
+  }
+  return payload;
+}
+
+function trovaContatto(id) {
+  return statoApp.contatti.find((contatto) => contatto.id === id);
+}
+
+function trovaOfferta(id) {
+  return statoApp.offerte.find((offerta) => offerta.id === id);
+}
+
+function offerteProposte(contatto) {
+  return (contatto.offerteProposteIds || []).map(trovaOfferta).filter(Boolean);
+}
+
+function offerteSottoscritte(contatto) {
+  return (contatto.offerteSottoscritteIds || []).map(trovaOfferta).filter(Boolean);
+}
 
 function contattiFiltrati() {
-  return statoApp.contatti.filter(c => {
-    const src = [c.nome, c.ruolo, c.azienda, c.localita, c.tipologiaContatto].join(" ").toLowerCase();
-    const q  = !statoApp.filtri.query || src.includes(statoApp.filtri.query.toLowerCase());
-    const s  = !statoApp.filtri.stato || c.stato === statoApp.filtri.stato;
-    const l  = !statoApp.filtri.localita || c.localita.toLowerCase().includes(statoApp.filtri.localita.toLowerCase());
-    const p  = !statoApp.filtri.livelloPriorita || c.livelloPriorita === statoApp.filtri.livelloPriorita;
-    const t  = !statoApp.filtri.tipologiaContatto || c.tipologiaContatto === statoApp.filtri.tipologiaContatto;
-    return q && s && l && p && t;
+  return statoApp.contatti.filter((contatto) => {
+    const sorgente = [contatto.nome, contatto.ruolo, contatto.azienda, contatto.localita, contatto.tipologiaContatto].join(" ").toLowerCase();
+    const queryOk = !statoApp.filtri.query || sorgente.includes(statoApp.filtri.query.toLowerCase());
+    const statoOk = !statoApp.filtri.stato || contatto.stato === statoApp.filtri.stato;
+    const localitaOk = !statoApp.filtri.localita || contatto.localita.toLowerCase().includes(statoApp.filtri.localita.toLowerCase());
+    const prioritaOk = !statoApp.filtri.livelloPriorita || contatto.livelloPriorita === statoApp.filtri.livelloPriorita;
+    const tipologiaOk = !statoApp.filtri.tipologiaContatto || contatto.tipologiaContatto === statoApp.filtri.tipologiaContatto;
+    return queryOk && statoOk && localitaOk && prioritaOk && tipologiaOk;
   });
 }
 
-/* ─────────────── SIDEBAR (mobile) ─────────────── */
-function initMobileUI() {
-  const sidebar  = document.getElementById("sidebar");
-  const overlay  = document.getElementById("sidebar-overlay");
-  const btnOpen  = document.getElementById("sidebar-toggle");
-  const btnClose = document.getElementById("sidebar-close");
-
-  function aprire() {
-    sidebar.classList.add("is-open");
-    overlay.classList.add("is-visible");
-    document.body.style.overflow = "hidden";
-  }
-  function chiudere() {
-    sidebar.classList.remove("is-open");
-    overlay.classList.remove("is-visible");
-    document.body.style.overflow = "";
-  }
-
-  btnOpen?.addEventListener("click", aprire);
-  btnClose?.addEventListener("click", chiudere);
-  overlay?.addEventListener("click", chiudere);
-}
-
-/* ─────────────── META SIDEBAR ─────────────── */
 function aggiornaMetaSidebar() {
-  const focus = [...statoApp.contatti].sort((a,b) => b.punteggioLead - a.punteggioLead)[0];
+  const sessionBox = document.getElementById("sidebar-session");
+  if (!statoApp.sessione.autenticato) {
+    document.querySelector('[data-nav-badge="dashboard"]').textContent = "-";
+    document.querySelector('[data-nav-badge="contacts"]').textContent = "-";
+    document.querySelector('[data-nav-badge="pipeline"]').textContent = "-";
+    document.querySelector('[data-nav-badge="offers"]').textContent = "-";
+    document.querySelector('[data-nav-badge="analytics"]').textContent = "-";
+    document.querySelector('[data-nav-badge="suggestions"]').textContent = "-";
+    document.querySelector('[data-nav-badge="upload"]').textContent = "-";
+    document.getElementById("sidebar-focus").textContent = "Accedi per aprire il tuo workspace.";
+    document.getElementById("sidebar-summary").textContent = "Sessione protetta, dati separati e importazioni visibili solo al proprietario.";
+    if (sessionBox) sessionBox.innerHTML = "";
+    return;
+  }
+  const focus = [...statoApp.contatti].sort((a, b) => b.punteggioLead - a.punteggioLead)[0];
+  document.querySelector('[data-nav-badge="dashboard"]').textContent = statoApp.contatti.length;
+  document.querySelector('[data-nav-badge="contacts"]').textContent = statoApp.contatti.length;
+  document.querySelector('[data-nav-badge="pipeline"]').textContent = statoApp.statiPipeline.length;
+  document.querySelector('[data-nav-badge="offers"]').textContent = statoApp.offerte.length;
+  document.querySelector('[data-nav-badge="analytics"]').textContent = "Live";
+  document.querySelector('[data-nav-badge="suggestions"]').textContent = statoApp.contatti.filter((contatto) => contatto.livelloPriorita === "Alta").length;
+  document.querySelector('[data-nav-badge="upload"]').textContent = statoApp.importazioneLinkedin.records.length || "ZIP";
 
-  const set = (sel, val) => {
-    document.querySelectorAll(`[data-nav-badge="${sel}"]`).forEach(el => el.textContent = val);
-  };
-  set("dashboard",  statoApp.contatti.length);
-  set("contacts",   statoApp.contatti.length);
-  set("pipeline",   statoApp.statiPipeline.length);
-  set("offers",     statoApp.offerte.length);
-  set("analytics",  "Live");
-  set("suggestions", statoApp.contatti.filter(c => c.livelloPriorita === "Alta").length);
-
-  const sfEl = document.getElementById("sidebar-focus");
-  const ssEl = document.getElementById("sidebar-summary");
-  if (sfEl) sfEl.textContent = focus ? `Priorità alta: ${focus.nome} – ${focus.azienda}.` : "Costruisci la pipeline.";
-  if (ssEl) ssEl.textContent =
-    `${statoApp.contatti.filter(c => c.stato === "Da contattare").length} da contattare, ` +
-    `${statoApp.contatti.filter(c => c.stato === "Abbonato").length} abbonati, ` +
-    `${statoApp.contatti.filter(c => c.tipologiaContatto === "Potenziale Partner").length} partner potenziali.`;
-
-  const tb = document.getElementById("topbar-badge");
-  if (tb) tb.textContent = focus ? `${focus.nome}` : "";
-}
-
-/* ─────────────── MENU ATTIVO ─────────────── */
-function impostaMenuAttivo() {
-  const path = window.location.pathname;
-  document.querySelectorAll("[data-nav]").forEach(el => {
-    const href = el.getAttribute("href");
-    const isDetail = href === "/contatti" && path.startsWith("/contatti/");
-    el.classList.toggle("active", path === href || isDetail);
-  });
-  // chiudi sidebar su mobile dopo navigazione
-  if (window.innerWidth < 768) {
-    document.getElementById("sidebar")?.classList.remove("is-open");
-    document.getElementById("sidebar-overlay")?.classList.remove("is-visible");
-    document.body.style.overflow = "";
+  document.getElementById("sidebar-focus").textContent = focus
+    ? `Priorita alta: ${focus.nome} - ${focus.azienda}.`
+    : "Costruisci la pipeline.";
+  document.getElementById("sidebar-summary").textContent = `${statoApp.contatti.filter((contatto) => contatto.stato === "Da contattare").length} da contattare, ${statoApp.contatti.filter((contatto) => contatto.stato === "Abbonato").length} abbonati, ${statoApp.contatti.filter((contatto) => contatto.tipologiaContatto === "Potenziale Partner").length} partner potenziali.`;
+  if (sessionBox) {
+    sessionBox.innerHTML = `
+      <div class="sidebar-session-meta">
+        <span>${escapeHtml(statoApp.sessione.utente?.email || "")}</span>
+        <button class="small-btn" id="logout-btn">Logout</button>
+      </div>
+    `;
+    document.getElementById("logout-btn")?.addEventListener("click", async () => {
+      await eseguiLogout("/");
+    });
   }
 }
 
-/* ─────────────── CARICAMENTO DATI ─────────────── */
+function impostaMenuAttivo() {
+  document.querySelectorAll("[data-link]").forEach((link) => {
+    const href = link.getAttribute("href");
+    const dettaglio = href === "/contatti" && window.location.pathname.startsWith("/contatti/");
+    link.classList.toggle("active", window.location.pathname === href || dettaglio);
+  });
+}
+
 async function caricaDati() {
-  const [pContatti, pPrompt, pMeta, pOfferte] = await Promise.all([
+  const payloadSessione = await api("/api/auth/session");
+  statoApp.sessione = payloadSessione;
+  if (!payloadSessione.autenticato) {
+    return;
+  }
+
+  const [payloadContatti, payloadPrompt, payloadMetadati, payloadAi] = await Promise.all([
     api("/api/contatti"),
     api("/api/prompt-ai"),
     api("/api/metadati"),
-    api("/api/offerte")
+    api("/api/impostazioni/ai-provider")
   ]);
-  statoApp.contatti      = pContatti.contatti;
-  statoApp.riepilogo     = pContatti.riepilogo;
-  statoApp.promptAi      = pPrompt.promptAi;
-  statoApp.statiPipeline = pMeta.statiPipeline;
-  statoApp.offerte       = pOfferte.offerte;
+
+  statoApp.contatti = payloadContatti.contatti;
+  statoApp.riepilogo = payloadContatti.riepilogo;
+  statoApp.promptAi = payloadPrompt;
+  statoApp.statiPipeline = payloadMetadati.statiPipeline;
+  statoApp.offerte = payloadMetadati.offerte;
+  statoApp.limiteZipBytes = payloadMetadati.limiteZipBytes || 0;
+  statoApp.impostazioniAi = payloadAi.impostazioni;
   aggiornaMetaSidebar();
 }
 
-/* ─────────────── OFFERTE CRUD ─────────────── */
-async function creaOfferta(dati) {
-  const res = await api("/api/offerte", { method: "POST", body: JSON.stringify(dati) });
-  statoApp.offerte = res.offerte;
+async function caricaAdmin() {
+  const payload = await api("/api/admin/utenti");
+  statoApp.admin = {
+    utenti: payload.utenti || [],
+    riepilogo: payload.riepilogo || null
+  };
+}
+
+async function aggiornaContatto(id, payload, messaggio) {
+  const risposta = await api(`/api/contatti/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+  statoApp.contatti = statoApp.contatti.map((contatto) => (contatto.id === id ? risposta.contatto : contatto));
+  statoApp.riepilogo = risposta.riepilogo;
   aggiornaMetaSidebar();
-  return res.offerta;
-}
-
-async function salvaModificheOfferta(id, dati) {
-  const res = await api(`/api/offerte/${id}`, { method: "PATCH", body: JSON.stringify(dati) });
-  statoApp.offerte = res.offerte;
-  aggiornaMetaSidebar();
-  return res.offerta;
-}
-
-async function eliminaOfferta(id) {
-  const res = await api(`/api/offerte/${id}`, { method: "DELETE" });
-  statoApp.offerte = res.offerte;
-  aggiornaMetaSidebar();
-}
-
-async function assegnaOffertaContatto(offortaId, contattoId, campo, aggiunge) {
-  const c = trovaContatto(contattoId);
-  if (!c) return;
-  const lista = [...(c[campo] || [])];
-  if (aggiunge && !lista.includes(offortaId)) lista.push(offortaId);
-  if (!aggiunge) { const i = lista.indexOf(offortaId); if (i !== -1) lista.splice(i, 1); }
-  return aggiornaContatto(contattoId, { [campo]: lista });
-}
-
-function mostraModaleOfferta(offerta = null) {
-  document.getElementById("modale-offerta")?.remove();
-  const modale = document.createElement("div");
-  modale.id = "modale-offerta";
-  modale.className = "modal-overlay";
-  modale.innerHTML = `
-    <div class="modal-card" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <h3>${offerta ? "Modifica offerta" : "Nuova offerta"}</h3>
-        <button class="icon-btn" id="chiudi-modale" aria-label="Chiudi">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
-      <div class="form-stack">
-        <div class="form-field">
-          <label>Nome *</label>
-          <input id="of-nome" placeholder="es. Sprint Revenue Engine" value="${escapeHtml(offerta?.nome || '')}" />
-        </div>
-        <div class="form-field">
-          <label>Descrizione</label>
-          <textarea id="of-desc" rows="3" placeholder="Descrizione breve…">${escapeHtml(offerta?.descrizione || '')}</textarea>
-        </div>
-        <div class="form-field">
-          <label>Tipologia</label>
-          <select id="of-tipo">
-            <option value="azienda" ${(!offerta || offerta.tipologia === 'azienda') ? 'selected' : ''}>Azienda</option>
-            <option value="partner" ${offerta?.tipologia === 'partner' ? 'selected' : ''}>Partner</option>
-          </select>
-        </div>
-        <div class="form-field">
-          <label>Prezzo</label>
-          <input id="of-prezzo" placeholder="es. EUR 1.900 o EUR 149/mese" value="${escapeHtml(offerta?.prezzo || '')}" />
-        </div>
-        <div class="form-field">
-          <label>% Partner</label>
-          <input id="of-partner" placeholder="es. 30%" value="${escapeHtml(offerta?.percentualePartner || '0%')}" />
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="ghost-btn" id="annulla-modale">Annulla</button>
-        <button class="btn" id="salva-offerta">${offerta ? "Salva modifiche" : "Crea offerta"}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modale);
-
-  const chiudi = () => modale.remove();
-  document.getElementById("chiudi-modale")?.addEventListener("click", chiudi);
-  document.getElementById("annulla-modale")?.addEventListener("click", chiudi);
-  modale.addEventListener("click", e => { if (e.target === modale) chiudi(); });
-
-  document.getElementById("salva-offerta")?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Salvo…", async () => {
-      const nome = document.getElementById("of-nome").value.trim();
-      if (!nome) { mostraToast("Il nome è obbligatorio"); return; }
-      const dati = {
-        nome,
-        descrizione: document.getElementById("of-desc").value.trim(),
-        tipologia:   document.getElementById("of-tipo").value,
-        prezzo:      document.getElementById("of-prezzo").value.trim(),
-        percentualePartner: document.getElementById("of-partner").value.trim() || "0%"
-      };
-      if (offerta) {
-        await salvaModificheOfferta(offerta.id, dati);
-        mostraToast("Offerta aggiornata");
-      } else {
-        await creaOfferta(dati);
-        mostraToast("Offerta creata");
-      }
-      chiudi();
-      renderRoute();
-    })
-  );
-}
-
-async function aggiornaContatto(id, payload, msg) {
-  const res = await api(`/api/contatti/${id}`, { method:"PATCH", body: JSON.stringify(payload) });
-  statoApp.contatti = statoApp.contatti.map(c => c.id === id ? res.contatto : c);
-  statoApp.riepilogo = res.riepilogo;
-  aggiornaMetaSidebar();
-  if (msg) mostraToast(msg);
-  return res.contatto;
+  if (messaggio) mostraToast(messaggio);
+  return risposta.contatto;
 }
 
 async function generaSuggerimentoAi(id) {
-  const res = await api("/api/ai/genera", { method:"POST", body: JSON.stringify({ contattoId: id }) });
-  statoApp.contatti = statoApp.contatti.map(c => c.id === id ? res.contatto : c);
+  const risposta = await api("/api/ai/genera", {
+    method: "POST",
+    body: JSON.stringify({ contattoId: id })
+  });
+  statoApp.contatti = statoApp.contatti.map((contatto) => (contatto.id === id ? risposta.contatto : contatto));
   aggiornaMetaSidebar();
   mostraToast("Suggerimento aggiornato");
-  renderRoute(res.contatto);
+  renderRoute(risposta.contatto);
 }
 
-async function copiaTesto(testo, btn) {
+async function copiaTesto(testo, bottone) {
   try {
     await navigator.clipboard.writeText(testo);
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = testo; document.body.appendChild(ta); ta.select();
-    document.execCommand("copy"); ta.remove();
+  } catch (errore) {
+    const fallback = document.createElement("textarea");
+    fallback.value = testo;
+    document.body.appendChild(fallback);
+    fallback.select();
+    document.execCommand("copy");
+    fallback.remove();
   }
-  if (btn) btn.textContent = "Copiato ✓";
+  if (bottone) bottone.textContent = "Copiato";
   mostraToast("Messaggio copiato");
 }
 
-/* ─────────────── GRAFICI ─────────────── */
+function renderMetricCard(titolo, valore, dettaglio, classe = "") {
+  return `
+    <article class="metric-card ${classe}">
+      <span class="eyebrow">${escapeHtml(titolo)}</span>
+      <strong>${escapeHtml(String(valore))}</strong>
+      <p class="subtle">${escapeHtml(dettaglio)}</p>
+    </article>
+  `;
+}
+
 function contattiConCall(lista) {
-  return lista.filter(c =>
-    c.timeline.some(e => e.tipo === "call") ||
-    ["Follow-up call effettuata","Follow-up post call","Abbonato","Disdettato"].includes(c.stato)
+  return lista.filter(
+    (contatto) =>
+      contatto.timeline.some((evento) => evento.tipo === "call") ||
+      ["Follow-up call effettuata", "Follow-up post call", "Abbonato", "Disdettato"].includes(contatto.stato)
   );
 }
 
-function distribuzioneFrequenza(lista, fn) {
-  const m = new Map();
-  lista.forEach(el => { const k = fn(el) || "—"; m.set(k, (m.get(k)||0)+1); });
-  return Array.from(m.entries())
-    .map(([etichetta, valore], i) => ({ etichetta, valore, colore: COLORI_GRAFICI[i % COLORI_GRAFICI.length] }))
-    .sort((a,b) => b.valore - a.valore);
+function distribuzioneFrequenza(lista, estraiValore) {
+  const mappa = new Map();
+  lista.forEach((elemento) => {
+    const chiave = estraiValore(elemento) || "Non definito";
+    mappa.set(chiave, (mappa.get(chiave) || 0) + 1);
+  });
+  return Array.from(mappa.entries())
+    .map(([etichetta, valore], index) => ({ etichetta, valore, colore: COLORI_GRAFICI[index % COLORI_GRAFICI.length] }))
+    .sort((a, b) => b.valore - a.valore);
 }
 
 function distribuzioneStati(lista) {
-  const tot = Math.max(1, lista.length);
-  return statoApp.statiPipeline.map((stato, i) => {
-    const v = lista.filter(c => c.stato === stato).length;
-    return { stato, valore: v, percentuale: Math.round((v/tot)*100), colore: COLORI_GRAFICI[i % COLORI_GRAFICI.length] };
+  const totale = Math.max(1, lista.length);
+  return statoApp.statiPipeline.map((stato, index) => {
+    const valore = lista.filter((contatto) => contatto.stato === stato).length;
+    return {
+      stato,
+      valore,
+      percentuale: Math.round((valore / totale) * 100),
+      colore: COLORI_GRAFICI[index % COLORI_GRAFICI.length]
+    };
   });
 }
 
-function conicGradient(voci) {
-  const tot = voci.reduce((s,v) => s+v.valore, 0);
-  if (!tot) return "conic-gradient(#e5ded2 0deg 360deg)";
-  let acc = 0;
-  return "conic-gradient(" + voci.map(v => {
-    const s = acc; const g = (v.valore/tot)*360; acc += g;
-    return `${v.colore} ${s}deg ${acc}deg`;
-  }).join(", ") + ")";
+function buildConicGradient(voci) {
+  const totale = voci.reduce((somma, voce) => somma + voce.valore, 0);
+  if (!totale) return "conic-gradient(#e5ded2 0deg 360deg)";
+
+  let accumulato = 0;
+  const segmenti = voci.map((voce) => {
+    const inizio = accumulato;
+    const gradi = (voce.valore / totale) * 360;
+    accumulato += gradi;
+    return `${voce.colore} ${inizio}deg ${accumulato}deg`;
+  });
+  return `conic-gradient(${segmenti.join(", ")})`;
 }
 
-function renderChartTorta(titolo, voci) {
-  const tot = voci.reduce((s,v) => s+v.valore, 0);
+function renderCardTorta(titolo, voci) {
+  const totale = voci.reduce((somma, voce) => somma + voce.valore, 0);
   return `
     <article class="chart-card">
       <div class="section-head">
-        <div><span class="eyebrow">Torta</span><h3>${escapeHtml(titolo)}</h3></div>
-        <strong>${tot}</strong>
+        <div>
+          <span class="eyebrow">Grafico a torta</span>
+          <h3>${escapeHtml(titolo)}</h3>
+        </div>
+        <strong>${totale}</strong>
       </div>
       <div class="chart-pie-wrap">
-        <div class="chart-pie" style="background:${conicGradient(voci)}"></div>
+        <div class="chart-pie" style="background:${buildConicGradient(voci)}"></div>
         <div class="chart-legend">
-          ${voci.length
-            ? voci.map(v => `
-                <div class="legend-item">
-                  <span class="legend-swatch" style="background:${v.colore}"></span>
-                  <span class="text-xs">${escapeHtml(v.etichetta)}</span>
-                  <strong>${v.valore}</strong>
-                </div>`).join("")
-            : `<p class="subtle text-sm">Nessun dato</p>`}
+          ${
+            voci.length
+              ? voci
+                  .map(
+                    (voce) => `
+                      <div class="legend-item">
+                        <span class="legend-swatch" style="background:${voce.colore}"></span>
+                        <span>${escapeHtml(voce.etichetta)}</span>
+                        <strong>${voce.valore}</strong>
+                      </div>
+                    `
+                  )
+                  .join("")
+              : `<div class="subtle">Nessun dato disponibile</div>`
+          }
         </div>
       </div>
-    </article>`;
+    </article>
+  `;
 }
 
-function renderChartBarre(titolo, serie) {
-  const max = Math.max(1, ...serie.map(v => v.valore));
+function renderCardBarre(titolo, serie) {
+  const massimo = Math.max(1, ...serie.map((voce) => voce.valore));
   return `
-    <article class="chart-card" style="grid-column: 1 / -1">
-      <div class="section-head"><div><span class="eyebrow">Barre</span><h3>${escapeHtml(titolo)}</h3></div></div>
-      <div class="bar-chart">
-        ${serie.map(v => `
-          <div class="bar-row">
-            <span class="bar-label">${escapeHtml(v.stato)}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${(v.valore/max)*100}%;background:${v.colore}"></div></div>
-            <span class="bar-count">${v.valore}</span>
-          </div>`).join("")}
+    <article class="chart-card chart-card-wide">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Grafico a barre</span>
+          <h3>${escapeHtml(titolo)}</h3>
+        </div>
       </div>
-    </article>`;
+      <div class="bar-chart">
+        ${serie
+          .map(
+            (voce) => `
+              <div class="bar-row">
+                <span class="bar-label">${escapeHtml(voce.stato)}</span>
+                <div class="bar-track">
+                  <div class="bar-fill" style="width:${(voce.valore / massimo) * 100}%; background:${voce.colore}"></div>
+                </div>
+                <strong>${voce.valore}</strong>
+              </div>
+            `
+          )
+          .join("")}
+      </div>
+    </article>
+  `;
 }
 
-function contattiPerOfferta(id) {
-  return statoApp.contatti.filter(c =>
-    (c.offerteProposteIds||[]).includes(id) || (c.offerteSottoscritteIds||[]).includes(id)
+function contattiAssociatiAOfferta(idOfferta) {
+  return statoApp.contatti.filter(
+    (contatto) => (contatto.offerteProposteIds || []).includes(idOfferta) || (contatto.offerteSottoscritteIds || []).includes(idOfferta)
   );
 }
 
-/* ─────────────── PANNELLO AI ─────────────── */
 function renderPannelloAi(contatto) {
   const focus = contatto || statoApp.contatti[0];
   if (!focus) {
-    pannelloAi.innerHTML = `<div class="assistant-stack"><span class="eyebrow">Assistente AI</span><p class="subtle">Nessun contatto disponibile.</p></div>`;
+    pannelloAi.innerHTML = `<div class="sticky"><span class="eyebrow">Assistente AI</span><h2>Nessun contatto</h2></div>`;
     return;
   }
 
   pannelloAi.innerHTML = `
-    <div class="assistant-stack">
-      <div class="assistant-hero">
+    <div class="sticky assistant-stack">
+      <div class="assistant-hero tone-${slugStato(focus.stato)}">
         <div>
-          <span class="eyebrow">AI Assistant</span>
-          <h3 style="color:#fffaf0;margin:6px 0 6px;font-size:16px">${escapeHtml(focus.stato)}</h3>
-          <p style="font-size:13px">${escapeHtml(focus.insight)}</p>
+          <span class="eyebrow">Assistente AI</span>
+          <h2>${escapeHtml(focus.stato)}</h2>
+          <p>${escapeHtml(focus.insight)}</p>
         </div>
         <div class="score-orb">
-          <span>${escapeHtml(focus.livelloPriorita)}</span>
-          <strong>${focus.punteggioLead}</strong>
-          <span>score</span>
+          <span>Priorita</span>
+          <strong>${escapeHtml(focus.livelloPriorita)}</strong>
         </div>
       </div>
 
       <div class="panel-card">
-        <span class="eyebrow" style="margin-bottom:10px">Classificazione</span>
-        <div class="ai-meta-grid">
+        <span class="eyebrow">Classificazione</span>
+        <div class="assistant-meta-grid">
           <div><span>Tipologia</span><strong>${escapeHtml(focus.tipologiaContatto)}</strong></div>
           <div><span>Punteggio</span><strong>${focus.punteggioLead}</strong></div>
           <div><span>Ruolo</span><strong>${escapeHtml(focus.ruolo)}</strong></div>
@@ -441,184 +456,200 @@ function renderPannelloAi(contatto) {
       </div>
 
       <div class="panel-card">
-        <span class="eyebrow" style="margin-bottom:8px">Prossima azione</span>
-        <p style="font-weight:700;font-size:14px;margin-bottom:8px">${escapeHtml(focus.prossimaAzione)}</p>
-        <div class="message-surface">${escapeHtml(focus.messaggioSuggerito)}</div>
-        <div class="actions-row" style="margin-top:12px">
-          <button class="btn" id="copy-ai-msg">Copia</button>
+        <span class="eyebrow">Messaggio suggerito</span>
+        <h3>${escapeHtml(focus.prossimaAzione)}</h3>
+        <p>${escapeHtml(focus.messaggioSuggerito)}</p>
+        <div class="actions-row">
+          <button class="btn" id="copy-messaggio-ai">Copy</button>
           <button class="ghost-btn" id="refresh-ai">Refresh AI</button>
         </div>
       </div>
 
       <div class="panel-card">
-        <span class="eyebrow" style="margin-bottom:10px">Offerte assegnate</span>
+        <span class="eyebrow">Offerte assegnate</span>
         <div class="offer-mini-list">
-          ${offerteProposte(focus).map(o => `
-            <div class="offer-mini-item">
-              <strong>${escapeHtml(o.nome)}</strong>
-              <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
-            </div>`).join("") || `<p class="subtle text-sm">Nessuna offerta assegnata.</p>`}
+          ${offerteProposte(focus)
+            .map(
+              (offerta) => `
+                <div class="offer-mini-item">
+                  <strong>${escapeHtml(offerta.nome)}</strong>
+                  <span>${escapeHtml(offerta.tipologia)} · ${escapeHtml(offerta.prezzo)}</span>
+                </div>
+              `
+            )
+            .join("")}
         </div>
       </div>
-    </div>`;
+    </div>
+  `;
 
-  document.getElementById("copy-ai-msg")?.addEventListener("click", e => copiaTesto(focus.messaggioSuggerito, e.currentTarget));
-  document.getElementById("refresh-ai")?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Aggiorno...", () => generaSuggerimentoAi(focus.id))
+  document.getElementById("copy-messaggio-ai")?.addEventListener("click", (event) => copiaTesto(focus.messaggioSuggerito, event.currentTarget));
+  document.getElementById("refresh-ai")?.addEventListener("click", (event) =>
+    conBottoneInCaricamento(event.currentTarget, "Aggiorno...", () => generaSuggerimentoAi(focus.id))
   );
 }
 
-/* ─────────────── DASHBOARD ─────────────── */
 function renderDashboard() {
-  const top = [...statoApp.contatti].sort((a,b) => b.punteggioLead - a.punteggioLead).slice(0,5);
-
+  const top = [...statoApp.contatti].sort((a, b) => b.punteggioLead - a.punteggioLead).slice(0, 4);
   areaPrincipale.innerHTML = `
-    <div class="hero-panel">
-      <div>
-        <span class="eyebrow">CRM · Pipeline · Offerte</span>
-        <h1>Converti contatti LinkedIn in abbonati.</h1>
-        <p>AITOBUSINESS separa clienti e partner, collega le offerte, traccia ogni stato della pipeline e guida il team dalla prima chat alla firma.</p>
+    <section class="hero-panel">
+      <div class="hero-copy">
+        <span class="eyebrow">CRM completo</span>
+        <h1>Pipeline, contatti e offerte collegate in un unico flusso.</h1>
+        <p>Aito Business distingue clienti e partner, collega offerte commerciali e partnership, salva gli stati reali della pipeline e guida il team dalla prima chat fino all'abbonamento.</p>
         <div class="hero-actions">
           <a class="btn" href="/contatti" data-link>Apri contatti</a>
-          <a class="ghost-btn" href="/pipeline" data-link style="color:#fffaf0;border-color:rgba(255,250,240,0.3);background:rgba(255,255,255,0.1)">Pipeline</a>
+          <a class="ghost-btn" href="/pipeline" data-link>Apri pipeline</a>
         </div>
       </div>
-      <div class="hero-stats">
-        <div class="hero-stat">
+      <div class="hero-aside">
+        <div class="hero-chip">
           <span>Abbonati</span>
-          <strong>${statoApp.contatti.filter(c => c.stato === "Abbonato").length}</strong>
+          <strong>${statoApp.contatti.filter((contatto) => contatto.stato === "Abbonato").length}</strong>
         </div>
-        <div class="hero-stat">
-          <span>Partner</span>
-          <strong>${statoApp.contatti.filter(c => c.tipologiaContatto === "Potenziale Partner").length}</strong>
-        </div>
-        <div class="hero-stat">
-          <span>Alta priorità</span>
-          <strong>${statoApp.contatti.filter(c => c.livelloPriorita === "Alta").length}</strong>
+        <div class="hero-stack">
+          <div class="hero-mini-card">
+            <span class="eyebrow">Partner potenziali</span>
+            <strong>${statoApp.contatti.filter((contatto) => contatto.tipologiaContatto === "Potenziale Partner").length}</strong>
+            <p>Contatti da valorizzare in partnership</p>
+          </div>
+          <div class="hero-mini-card">
+            <span class="eyebrow">Priorita alta</span>
+            <strong>${statoApp.contatti.filter((contatto) => contatto.livelloPriorita === "Alta").length}</strong>
+            <p>Lead da lavorare subito</p>
+          </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="metrics-grid">
-      ${metricCard("Contatti", statoApp.contatti.length, "In piattaforma", "metric-ink")}
-      ${metricCard("Da contattare", statoApp.contatti.filter(c => c.stato === "Da contattare").length, "Lead da attivare", "metric-accent")}
-      ${metricCard("Follow-up post call", statoApp.contatti.filter(c => c.stato === "Follow-up post call").length, "In chiusura", "metric-gold")}
-      ${metricCard("Offerte attive", statoApp.offerte.length, "Catalogo", "metric-muted")}
-    </div>
+    <section class="metrics-grid">
+      ${renderMetricCard("Contatti", statoApp.contatti.length, "Lead e partner in piattaforma", "metric-ink")}
+      ${renderMetricCard("Da contattare", statoApp.contatti.filter((contatto) => contatto.stato === "Da contattare").length, "Lead ancora da attivare", "metric-accent")}
+      ${renderMetricCard("Follow-up post call", statoApp.contatti.filter((contatto) => contatto.stato === "Follow-up post call").length, "Lead in chiusura", "metric-gold")}
+      ${renderMetricCard("Offerte", statoApp.offerte.length, "Catalogo azienda e partner", "metric-muted")}
+    </section>
 
-    <div class="dashboard-grid">
+    <section class="dashboard-grid">
       <article class="panel-card">
         <div class="section-head">
-          <div><span class="eyebrow">Priorità commerciali</span><h3>Da lavorare oggi</h3></div>
+          <div>
+            <span class="eyebrow">Priorita commerciali</span>
+            <h3>Contatti da lavorare oggi</h3>
+          </div>
         </div>
         <div class="priority-list">
-          ${top.map(c => `
-            <button class="priority-item" data-dettaglio="${c.id}">
-              <span class="avatar">${iniziali(c.nome)}</span>
-              <span class="priority-copy">
-                <strong>${escapeHtml(c.nome)}</strong>
-                <span>${escapeHtml(c.ruolo)} · ${escapeHtml(c.tipologiaContatto)}</span>
-              </span>
-              <span class="priority-meta">
-                <span class="pill tone-${slugStato(c.stato)}">${escapeHtml(c.stato)}</span>
-                <span class="pill pill-${c.livelloPriorita.toLowerCase()}">${escapeHtml(c.livelloPriorita)}</span>
-              </span>
-            </button>`).join("")}
+          ${top
+            .map(
+              (contatto) => `
+                <button class="priority-item" data-dettaglio="${contatto.id}">
+                  <span class="avatar">${iniziali(contatto.nome)}</span>
+                  <span class="priority-copy">
+                    <strong>${escapeHtml(contatto.nome)}</strong>
+                    <span>${escapeHtml(contatto.ruolo)} · ${escapeHtml(contatto.tipologiaContatto)}</span>
+                  </span>
+                  <span class="priority-meta">
+                    <span class="pill tone-${slugStato(contatto.stato)}">${escapeHtml(contatto.stato)}</span>
+                    <strong>${escapeHtml(contatto.livelloPriorita)}</strong>
+                  </span>
+                </button>
+              `
+            )
+            .join("")}
         </div>
       </article>
 
       <article class="panel-card">
         <div class="section-head">
-          <div><span class="eyebrow">Offerte attive</span><h3>Catalogo</h3></div>
+          <div>
+            <span class="eyebrow">Offerte attive</span>
+            <h3>Catalogo collegabile</h3>
+          </div>
         </div>
         <div class="offer-mini-list">
-          ${statoApp.offerte.map(o => `
-            <div class="offer-mini-item">
-              <strong>${escapeHtml(o.nome)}</strong>
-              <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)} · Partner ${escapeHtml(o.percentualePartner)}</span>
-            </div>`).join("")}
+          ${statoApp.offerte
+            .map(
+              (offerta) => `
+                <div class="offer-mini-item">
+                  <strong>${escapeHtml(offerta.nome)}</strong>
+                  <span>${escapeHtml(offerta.tipologia)} · ${escapeHtml(offerta.prezzo)} · Partner ${escapeHtml(offerta.percentualePartner)}</span>
+                </div>
+              `
+            )
+            .join("")}
         </div>
       </article>
-    </div>`;
+    </section>
+  `;
 
   bindDettaglioContatto();
 }
 
-function metricCard(titolo, valore, dettaglio, cls = "") {
-  return `
-    <article class="metric-card ${cls}">
-      <span class="eyebrow">${escapeHtml(titolo)}</span>
-      <strong>${escapeHtml(String(valore))}</strong>
-      <p class="subtle text-sm">${escapeHtml(dettaglio)}</p>
-    </article>`;
-}
-
-/* ─────────────── CONTATTI ─────────────── */
-function renderRigaContatto(c) {
-  const primaOfferta = offerteProposte(c)[0];
-  const tipoPill = c.tipologiaContatto === "Potenziale Partner"
-    ? `<span class="pill pill-partner">Partner</span>`
-    : `<span class="pill pill-cliente">Cliente</span>`;
-
+function renderRigaContatto(contatto) {
+  const primaOfferta = offerteProposte(contatto)[0];
   return `
     <tr>
-      <td class="cell-name">
-        <div style="display:flex;align-items:center;gap:10px">
-          <span class="avatar">${iniziali(c.nome)}</span>
-          <div>
-            <strong>${escapeHtml(c.nome)}</strong>
-            <span>${escapeHtml(c.localita)}</span>
+      <td>
+        <div class="contact-cell">
+          <span class="avatar">${iniziali(contatto.nome)}</span>
+          <div class="contact-primary">
+            <strong>${escapeHtml(contatto.nome)}</strong>
+            <span>${escapeHtml(contatto.localita)}</span>
           </div>
         </div>
       </td>
-      <td class="cell-role"><strong>${escapeHtml(c.ruolo)}</strong></td>
-      <td class="cell-company">
-        <strong>${escapeHtml(c.azienda)}</strong>
-        <span>${escapeHtml(c.settore || "—")}</span>
-      </td>
-      <td>${tipoPill}</td>
-      <td><span class="pill pill-${c.livelloPriorita.toLowerCase()}">${escapeHtml(c.livelloPriorita)}</span></td>
-      <td><span class="pill tone-${slugStato(c.stato)}">${escapeHtml(c.stato)}</span></td>
-      <td class="offer-link">
-        ${primaOfferta
-          ? `<strong>${escapeHtml(primaOfferta.nome)}</strong><span>${escapeHtml(primaOfferta.tipologia)} · ${escapeHtml(primaOfferta.prezzo)}</span>`
-          : `<span class="subtle">—</span>`}
-      </td>
+      <td><strong>${escapeHtml(contatto.ruolo)}</strong></td>
       <td>
-        <div class="cell-actions">
-          <button class="small-btn" data-dettaglio="${c.id}">Open</button>
-          <button class="small-btn" data-copy="${c.id}">Copy</button>
+        <div class="company-cell">
+          <strong>${escapeHtml(contatto.azienda)}</strong>
+          <span>${escapeHtml(contatto.settore || "-")}</span>
         </div>
       </td>
-    </tr>`;
+      <td><span class="pill lead-type-pill">${escapeHtml(contatto.tipologiaContatto)}</span></td>
+      <td><span class="pill priority-pill priority-${contatto.livelloPriorita.toLowerCase()}">${escapeHtml(contatto.livelloPriorita)}</span></td>
+      <td><span class="pill tone-${slugStato(contatto.stato)}">${escapeHtml(contatto.stato)}</span></td>
+      <td>
+        ${
+          primaOfferta
+            ? `<div class="offer-link-cell"><strong>${escapeHtml(primaOfferta.nome)}</strong><span>${escapeHtml(primaOfferta.tipologia)} · ${escapeHtml(primaOfferta.prezzo)}</span></div>`
+            : `<span class="subtle">Nessuna</span>`
+        }
+      </td>
+      <td>
+        <div class="actions-row">
+          <button class="small-btn" data-dettaglio="${contatto.id}">Open</button>
+          <button class="small-btn" data-copy="${contatto.id}">Copy</button>
+        </div>
+      </td>
+    </tr>
+  `;
 }
 
 function renderContatti() {
-  const lista = contattiFiltrati();
+  const contatti = contattiFiltrati();
   areaPrincipale.innerHTML = `
-    <div class="page-header-row">
-      <div class="page-header">
-        <span class="eyebrow">CRM</span>
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">Vista contatti</span>
         <h1>Contatti</h1>
-        <p>Tabella con ruolo, tipologia cliente/partner, livello di priorità, stato pipeline e offerta collegata.</p>
+        <p>Tabella CRM con ruolo separato, tipologia intelligente cliente o partner, priorita, stato e offerta collegata.</p>
       </div>
       <div class="header-actions">
-        <a class="ghost-btn" href="/onboarding" data-link>Onboarding</a>
-        <button class="ghost-btn" id="reset-demo">Reset</button>
+        <a class="ghost-btn" href="/importa-linkedin" data-link>Importa LinkedIn</a>
+        <button class="ghost-btn" id="reset-demo">Reset demo</button>
         <button class="btn" id="export-csv">Export CSV</button>
       </div>
-    </div>
+    </section>
 
-    <div class="filter-shell">
-      <div class="filter-grid">
-        <input id="filtro-query" placeholder="Cerca nome, ruolo, azienda…" value="${escapeHtml(statoApp.filtri.query)}" />
+    <section class="filter-shell">
+      <div class="filter-bar filter-bar-wide">
+        <input id="filtro-query" placeholder="Cerca nome, ruolo, azienda..." value="${escapeHtml(statoApp.filtri.query)}" />
         <select id="filtro-stato">
           <option value="">Tutti gli stati</option>
-          ${statoApp.statiPipeline.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("")}
+          ${statoApp.statiPipeline.map((stato) => `<option value="${escapeHtml(stato)}">${escapeHtml(stato)}</option>`).join("")}
         </select>
-        <input id="filtro-localita" placeholder="Città…" value="${escapeHtml(statoApp.filtri.localita)}" />
+        <input id="filtro-localita" placeholder="Filtra per localita" value="${escapeHtml(statoApp.filtri.localita)}" />
         <select id="filtro-priorita">
-          <option value="">Tutte le priorità</option>
+          <option value="">Tutte le priorita</option>
           <option value="Alta">Alta</option>
           <option value="Media">Media</option>
           <option value="Bassa">Bassa</option>
@@ -630,45 +661,46 @@ function renderContatti() {
         </select>
         <button class="ghost-btn" id="clear-filtri">Clear</button>
       </div>
-      <div class="filter-row">
-        <span class="filter-summary">${lista.length} righe · ${Object.values(statoApp.filtri).filter(Boolean).length} filtri attivi</span>
+      <div class="filter-summary">
+        <span>${contatti.length} righe visibili</span>
+        <span>${Object.values(statoApp.filtri).filter(Boolean).length} filtri attivi</span>
       </div>
-    </div>
+    </section>
 
-    <div class="table-wrap">
-      <table>
+    <section class="panel-card table-card contacts-card">
+      <table class="contacts-table">
         <thead>
           <tr>
             <th>Nome</th>
             <th>Ruolo</th>
-            <th>Azienda / Settore</th>
+            <th>Azienda</th>
             <th>Tipologia</th>
-            <th>Priorità</th>
+            <th>Livello di Priorita</th>
             <th>Stato</th>
             <th>Offerta</th>
             <th>Azioni</th>
           </tr>
         </thead>
         <tbody>
-          ${lista.length
-            ? lista.map(renderRigaContatto).join("")
-            : `<tr><td colspan="8"><div class="empty-state"><strong>Nessun contatto trovato.</strong><p>Modifica i filtri o importa nuovi dati.</p></div></td></tr>`}
+          ${contatti.length ? contatti.map(renderRigaContatto).join("") : `<tr><td colspan="8"><div class="empty-state"><strong>Nessun contatto trovato.</strong><p>Modifica i filtri o importa nuovi dati.</p></div></td></tr>`}
         </tbody>
       </table>
-    </div>`;
+    </section>
+  `;
 
-  document.getElementById("filtro-stato").value      = statoApp.filtri.stato;
-  document.getElementById("filtro-priorita").value   = statoApp.filtri.livelloPriorita;
-  document.getElementById("filtro-tipologia").value  = statoApp.filtri.tipologiaContatto;
+  document.getElementById("filtro-stato").value = statoApp.filtri.stato;
+  document.getElementById("filtro-priorita").value = statoApp.filtri.livelloPriorita;
+  document.getElementById("filtro-tipologia").value = statoApp.filtri.tipologiaContatto;
   bindAzioniContatti();
 }
 
 function bindAzioniContatti() {
-  document.getElementById("filtro-query")?.addEventListener("input", e => {
-    clearTimeout(debounceRicerca);
-    debounceRicerca = setTimeout(() => {
-      statoApp.filtri.query = e.target.value;
-      renderContatti(); bindNav();
+  document.getElementById("filtro-query")?.addEventListener("input", (event) => {
+    window.clearTimeout(debounceRicerca);
+    debounceRicerca = window.setTimeout(() => {
+      statoApp.filtri.query = event.target.value;
+      renderContatti();
+      bindGlobalNavigation();
     }, 120);
   });
 
@@ -677,24 +709,26 @@ function bindAzioniContatti() {
     ["filtro-localita", "localita"],
     ["filtro-priorita", "livelloPriorita"],
     ["filtro-tipologia", "tipologiaContatto"]
-  ].forEach(([id, key]) => {
-    const ev = id === "filtro-localita" ? "input" : "change";
-    document.getElementById(id)?.addEventListener(ev, e => {
-      statoApp.filtri[key] = e.target.value;
-      renderContatti(); bindNav();
+  ].forEach(([id, chiave]) => {
+    const evento = id === "filtro-localita" ? "input" : "change";
+    document.getElementById(id)?.addEventListener(evento, (event) => {
+      statoApp.filtri[chiave] = event.target.value;
+      renderContatti();
+      bindGlobalNavigation();
     });
   });
 
   document.getElementById("clear-filtri")?.addEventListener("click", () => {
-    statoApp.filtri = { query:"",stato:"",localita:"",livelloPriorita:"",tipologiaContatto:"" };
-    renderContatti(); bindNav();
+    statoApp.filtri = { query: "", stato: "", localita: "", livelloPriorita: "", tipologiaContatto: "" };
+    renderContatti();
+    bindGlobalNavigation();
   });
 
-  document.getElementById("reset-demo")?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Reset…", async () => {
-      const r = await api("/api/reset", { method:"POST", body: JSON.stringify({}) });
-      statoApp.contatti  = r.contatti;
-      statoApp.riepilogo = r.riepilogo;
+  document.getElementById("reset-demo")?.addEventListener("click", (event) =>
+    conBottoneInCaricamento(event.currentTarget, "Reset...", async () => {
+      const risposta = await api("/api/reset", { method: "POST", body: JSON.stringify({}) });
+      statoApp.contatti = risposta.contatti;
+      statoApp.riepilogo = risposta.riepilogo;
       aggiornaMetaSidebar();
       renderRoute();
     })
@@ -703,234 +737,883 @@ function bindAzioniContatti() {
   document.getElementById("export-csv")?.addEventListener("click", esportaCsv);
   bindDettaglioContatto();
 
-  document.querySelectorAll("[data-copy]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const c = trovaContatto(btn.dataset.copy);
-      if (c) copiaTesto(c.messaggioSuggerito, btn);
+  document.querySelectorAll("[data-copy]").forEach((bottone) => {
+    bottone.addEventListener("click", () => {
+      const contatto = trovaContatto(bottone.dataset.copy);
+      copiaTesto(contatto.messaggioSuggerito, bottone);
     });
   });
 }
 
 function esportaCsv() {
   const righe = [
-    ["Nome","Ruolo","Azienda","Tipologia","Priorità","Stato","Offerta"],
-    ...contattiFiltrati().map(c => [
-      c.nome, c.ruolo, c.azienda, c.tipologiaContatto,
-      c.livelloPriorita, c.stato, offerteProposte(c)[0]?.nome || ""
+    ["Nome", "Ruolo", "Azienda", "Tipologia", "Priorita", "Stato", "Offerta"],
+    ...contattiFiltrati().map((contatto) => [
+      contatto.nome,
+      contatto.ruolo,
+      contatto.azienda,
+      contatto.tipologiaContatto,
+      contatto.livelloPriorita,
+      contatto.stato,
+      offerteProposte(contatto)[0]?.nome || ""
     ])
   ];
-  const csv = righe.map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(",")).join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8;" }));
-  const a = Object.assign(document.createElement("a"), { href:url, download:"aitobusiness-contatti.csv" });
-  a.click();
+  const csv = righe.map((riga) => riga.map((cella) => `"${String(cella).replaceAll('"', '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "aito-contatti.csv";
+  link.click();
   URL.revokeObjectURL(url);
   mostraToast("CSV esportato");
 }
 
-/* ─────────────── DETTAGLIO CONTATTO ─────────────── */
 async function renderDettaglioContatto(contatto) {
-  if (!contatto) { navigate("/contatti"); return; }
+  if (!contatto) {
+    navigate("/contatti");
+    return;
+  }
+
   const payload = await api(`/api/contatti/${contatto.id}`);
-  const c = payload.contatto;
-  statoApp.contatti = statoApp.contatti.map(x => x.id === c.id ? c : x);
+  const corrente = payload.contatto;
+  statoApp.contatti = statoApp.contatti.map((item) => (item.id === corrente.id ? corrente : item));
 
   areaPrincipale.innerHTML = `
-    <div class="page-header-row">
-      <div class="page-header">
+    <section class="page-header detail-title">
+      <div>
         <span class="eyebrow">Scheda contatto</span>
-        <h1>${escapeHtml(c.nome)}</h1>
-        <p>${escapeHtml(c.ruolo)} · ${escapeHtml(c.azienda)} · ${escapeHtml(c.tipologiaContatto)}</p>
+        <h1>${escapeHtml(corrente.nome)}</h1>
+        <p>${escapeHtml(corrente.ruolo)} · ${escapeHtml(corrente.azienda)} · ${escapeHtml(corrente.tipologiaContatto)}</p>
       </div>
       <div class="header-actions">
-        <a class="ghost-btn" href="/contatti" data-link>← Indietro</a>
-        <button class="btn" id="copy-dettaglio">Copia messaggio</button>
+        <a class="ghost-btn" href="/contatti" data-link>Back</a>
+        <button class="btn" id="copy-dettaglio">Copy</button>
       </div>
-    </div>
+    </section>
 
-    <div class="detail-grid">
-      <div class="contact-card">
+    <section class="detail-grid">
+      <div class="contact-card contact-summary-card">
         <div class="contact-hero">
-          <span class="avatar lg">${iniziali(c.nome)}</span>
+          <span class="avatar large">${iniziali(corrente.nome)}</span>
           <div>
-            <h2>${escapeHtml(c.nome)}</h2>
-            <p>${escapeHtml(c.ruolo)} · ${escapeHtml(c.azienda)}</p>
+            <h2>${escapeHtml(corrente.nome)}</h2>
+            <p>${escapeHtml(corrente.ruolo)} at ${escapeHtml(corrente.azienda)}</p>
           </div>
         </div>
-
         <div class="meta-grid">
-          <div class="meta-tile"><span class="eyebrow">Tipologia</span><strong>${escapeHtml(c.tipologiaContatto)}</strong></div>
-          <div class="meta-tile"><span class="eyebrow">Priorità</span><strong>${escapeHtml(c.livelloPriorita)}</strong></div>
-          <div class="meta-tile"><span class="eyebrow">Stato</span><strong>${escapeHtml(c.stato)}</strong></div>
-          <div class="meta-tile"><span class="eyebrow">Settore</span><strong>${escapeHtml(c.settore || "—")}</strong></div>
-          <div class="meta-tile"><span class="eyebrow">Punteggio</span><strong>${c.punteggioLead}</strong></div>
-          <div class="meta-tile"><span class="eyebrow">Ultimo contatto</span><strong>${formattaData(c.ultimoContatto)}</strong></div>
+          <div class="meta-tile"><span class="eyebrow">Tipologia</span><strong>${escapeHtml(corrente.tipologiaContatto)}</strong></div>
+          <div class="meta-tile"><span class="eyebrow">Priorita</span><strong>${escapeHtml(corrente.livelloPriorita)}</strong></div>
+          <div class="meta-tile"><span class="eyebrow">Stato</span><strong>${escapeHtml(corrente.stato)}</strong></div>
+          <div class="meta-tile"><span class="eyebrow">Settore</span><strong>${escapeHtml(corrente.settore || "-")}</strong></div>
         </div>
 
         <div class="linked-offers-block">
-          <div class="section-head" style="margin-bottom:8px">
-            <span class="eyebrow">Offerte proposte</span>
-          </div>
-          <div class="offer-mini-list" id="lista-proposte">
-            ${payload.offerteProposte.map(o => `
-              <div class="offer-mini-item">
-                <div>
-                  <strong>${escapeHtml(o.nome)}</strong>
-                  <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
+          <span class="eyebrow">Offerte proposte</span>
+          ${payload.offerteProposte
+            .map(
+              (offerta) => `
+                <div class="offer-mini-item">
+                  <strong>${escapeHtml(offerta.nome)}</strong>
+                  <span>${escapeHtml(offerta.tipologia)} · ${escapeHtml(offerta.prezzo)} · Partner ${escapeHtml(offerta.percentualePartner)}</span>
                 </div>
-                <button class="icon-remove-btn" data-rm-det-proposta="${o.id}" title="Rimuovi">×</button>
-              </div>`).join("") || `<p class="subtle text-sm">Nessuna</p>`}
-          </div>
-          <div class="assign-row" style="margin-top:8px">
-            <select id="det-add-proposta">
-              <option value="">Aggiungi offerta…</option>
-              ${statoApp.offerte.filter(o => !c.offerteProposteIds?.includes(o.id))
-                .map(o => `<option value="${o.id}">${escapeHtml(o.nome)}</option>`).join("")}
-            </select>
-            <button class="small-btn" id="btn-add-proposta">Aggiungi</button>
-          </div>
+              `
+            )
+            .join("")}
         </div>
 
         <div class="linked-offers-block">
-          <div class="section-head" style="margin-bottom:8px">
-            <span class="eyebrow">Offerte sottoscritte</span>
-          </div>
-          <div class="offer-mini-list" id="lista-sottoscritte">
-            ${payload.offerteSottoscritte.length
-              ? payload.offerteSottoscritte.map(o => `
-                  <div class="offer-mini-item">
-                    <div>
-                      <strong>${escapeHtml(o.nome)}</strong>
-                      <span>${escapeHtml(o.tipologia)} · ${escapeHtml(o.prezzo)}</span>
-                    </div>
-                    <button class="icon-remove-btn" data-rm-det-sottoscritta="${o.id}" title="Rimuovi">×</button>
-                  </div>`).join("")
-              : `<p class="subtle text-sm">Nessuna sottoscrizione attiva</p>`}
-          </div>
-          <div class="assign-row" style="margin-top:8px">
-            <select id="det-add-sottoscritta">
-              <option value="">Aggiungi offerta…</option>
-              ${statoApp.offerte.filter(o => !c.offerteSottoscritteIds?.includes(o.id))
-                .map(o => `<option value="${o.id}">${escapeHtml(o.nome)}</option>`).join("")}
-            </select>
-            <button class="small-btn" id="btn-add-sottoscritta">Aggiungi</button>
-          </div>
+          <span class="eyebrow">Offerte sottoscritte</span>
+          ${
+            payload.offerteSottoscritte.length
+              ? payload.offerteSottoscritte
+                  .map(
+                    (offerta) => `
+                      <div class="offer-mini-item">
+                        <strong>${escapeHtml(offerta.nome)}</strong>
+                        <span>${escapeHtml(offerta.tipologia)} · ${escapeHtml(offerta.prezzo)}</span>
+                      </div>
+                    `
+                  )
+                  .join("")
+              : `<span class="subtle">Nessuna sottoscrizione attiva</span>`
+          }
         </div>
       </div>
 
       <div class="timeline-panel">
-        <div class="section-head"><div><span class="eyebrow">Timeline</span><h3>Interazioni</h3></div></div>
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Timeline</span>
+            <h3>Interazioni</h3>
+          </div>
+        </div>
         <div class="timeline">
-          ${c.timeline.map(ev => `
-            <article class="timeline-card">
-              <span class="eyebrow">${escapeHtml(ev.tipo)}</span>
-              <h4>${formattaData(ev.data)}</h4>
-              <p>${escapeHtml(ev.testo)}</p>
-            </article>`).join("")}
+          ${corrente.timeline
+            .map(
+              (evento) => `
+                <article class="timeline-card">
+                  <span class="eyebrow">${escapeHtml(evento.tipo)}</span>
+                  <h3>${formattaData(evento.data)}</h3>
+                  <p>${escapeHtml(evento.testo)}</p>
+                </article>
+              `
+            )
+            .join("")}
         </div>
       </div>
-    </div>`;
+    </section>
+  `;
 
-  document.getElementById("copy-dettaglio")?.addEventListener("click", e => copiaTesto(c.messaggioSuggerito, e.currentTarget));
+  document.getElementById("copy-dettaglio")?.addEventListener("click", (event) => copiaTesto(corrente.messaggioSuggerito, event.currentTarget));
+}
 
-  const ricaricaScheda = async () => {
-    await renderDettaglioContatto(trovaContatto(c.id));
-    renderPannelloAi(trovaContatto(c.id));
-    bindNav();
+function statoRecordLabel(stato) {
+  return {
+    ready: "Pronto",
+    duplicate: "Duplicato",
+    needs_review: "Da revisionare",
+    failed: "Errore",
+    imported: "Importato",
+    excluded: "Escluso",
+    analyzed: "Analizzato",
+    pending: "In attesa"
+  }[stato] || stato;
+}
+
+function classeStatoRecord(stato) {
+  return {
+    ready: "tone-success",
+    duplicate: "tone-warning",
+    needs_review: "tone-rose",
+    failed: "tone-rose",
+    imported: "tone-success",
+    excluded: "tone-muted",
+    analyzed: "tone-accent",
+    pending: "tone-muted"
+  }[stato] || "tone-muted";
+}
+
+function aggiornaRecordAnteprima(recordId, patch) {
+  statoApp.importazioneLinkedin.records = statoApp.importazioneLinkedin.records.map((record) =>
+    record.id === recordId ? { ...record, ...patch } : record
+  );
+}
+
+function recordAnteprimaFiltrati() {
+  const filtro = statoApp.importazioneLinkedin.filtroFonte;
+  if (filtro === "tutti") return statoApp.importazioneLinkedin.records;
+  return statoApp.importazioneLinkedin.records.filter((record) => record.sourceKind === filtro);
+}
+
+async function salvaImpostazioniAiLinkedin(formData) {
+  const payload = {
+    provider: formData.get("provider"),
+    modello: formData.get("modello"),
+    endpoint: formData.get("endpoint"),
+    temperatura: Number(formData.get("temperatura") || 0.2),
+    maxToken: Number(formData.get("maxToken") || 600),
+    limiteCrediti: Number(formData.get("limiteCrediti") || 120),
+    creditiResidui: Number(formData.get("limiteCrediti") || 120),
+    creditiConsumati: 0
   };
+  const apiKey = formData.get("apiKey");
+  if (apiKey) payload.apiKey = apiKey;
+  const risposta = await api("/api/impostazioni/ai-provider", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  statoApp.impostazioniAi = risposta.impostazioni;
+  mostraToast("Impostazioni AI salvate");
+}
 
-  document.querySelectorAll("[data-rm-det-proposta]").forEach(btn =>
-    btn.addEventListener("click", e =>
-      conBottone(e.currentTarget, "…", async () => {
-        await assegnaOffertaContatto(btn.dataset.rmDetProposta, c.id, "offerteProposteIds", false);
-        mostraToast("Offerta rimossa dalle proposte");
-        await ricaricaScheda();
+async function inviaArchivioLinkedin(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const risposta = await api("/api/importazioni/linkedin/upload", {
+    method: "POST",
+    body: formData,
+    headers: {}
+  });
+  statoApp.importazioneLinkedin.job = risposta.job;
+  statoApp.importazioneLinkedin.records = risposta.records;
+  statoApp.importazioneLinkedin.riepilogo = risposta.riepilogo;
+}
+
+async function confermaImportazioneLinkedin() {
+  if (!statoApp.importazioneLinkedin.job) {
+    throw new Error("Nessuna importazione da confermare");
+  }
+  const risposta = await api(`/api/importazioni/linkedin/${statoApp.importazioneLinkedin.job.id}/conferma`, {
+    method: "POST",
+    body: JSON.stringify({
+      records: statoApp.importazioneLinkedin.records
+    })
+  });
+  statoApp.importazioneLinkedin.job = risposta.job;
+  statoApp.contatti = risposta.contatti;
+  statoApp.riepilogo = risposta.riepilogo;
+  aggiornaMetaSidebar();
+}
+
+async function annullaImportazioneLinkedin() {
+  if (!statoApp.importazioneLinkedin.job) return;
+  const risposta = await api(`/api/importazioni/linkedin/${statoApp.importazioneLinkedin.job.id}/annulla`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+  statoApp.importazioneLinkedin.job = risposta.job;
+}
+
+function renderStepImportazione(step) {
+  return `
+    <div class="processing-item processing-item-${escapeHtml(step.status)}">
+      <span>${escapeHtml(step.label)}</span>
+      <strong>${step.status === "done" ? "OK" : step.status === "active" ? "In corso" : "Attesa"}</strong>
+    </div>
+  `;
+}
+
+function renderRigaAnteprimaImport(record) {
+  const contatto = record.normalizedData || {};
+  const suggerimento = record.aiAnalysis || {};
+  return `
+    <tr>
+      <td>
+        <div class="contact-primary">
+          <strong>${escapeHtml(contatto.fullName || "-")}</strong>
+          <span>${escapeHtml(contatto.company || "-")}</span>
+        </div>
+      </td>
+      <td>${escapeHtml(contatto.jobTitle || "-")}</td>
+      <td>${escapeHtml(record.tipologiaContatto || "-")}</td>
+      <td><span class="pill ${record.sourceKind === "connections" ? "tone-success" : record.sourceKind === "imported_contacts" ? "tone-warning" : "tone-muted"}">${escapeHtml(record.sourceLabel || "-")}</span></td>
+      <td>${escapeHtml(String(record.qualityScore ?? "-"))}</td>
+      <td><span class="pill ${classeStatoRecord(record.status)}">${escapeHtml(statoRecordLabel(record.status))}</span></td>
+      <td><input class="table-input" data-import-pipeline="${record.id}" value="${escapeHtml(record.suggestedPipeline || "")}" /></td>
+      <td>
+        <select class="table-select" data-import-stage="${record.id}">
+          ${statoApp.statiPipeline.map((stato) => `<option value="${escapeHtml(stato)}" ${record.suggestedStage === stato ? "selected" : ""}>${escapeHtml(stato)}</option>`).join("")}
+        </select>
+      </td>
+      <td><input class="table-input" data-import-tag="${record.id}" value="${escapeHtml((record.tagSuggeriti || []).join(", "))}" /></td>
+      <td>
+        <select class="table-select" data-import-priority="${record.id}">
+          ${["Alta", "Media", "Bassa"].map((livello) => `<option value="${livello}" ${record.priorita === livello ? "selected" : ""}>${livello}</option>`).join("")}
+        </select>
+      </td>
+      <td>${escapeHtml(record.ultimaConversazione ? formattaData(record.ultimaConversazione) : "-")}</td>
+      <td>${escapeHtml((suggerimento.contact_summary || "").slice(0, 120) || "-")}</td>
+      <td>${escapeHtml(suggerimento.commercial_intent || "-")}</td>
+      <td>${Math.round(Number(record.confidenceScore || 0) * 100)}%</td>
+      <td><textarea class="table-textarea" data-import-note="${record.id}">${escapeHtml(record.note || "")}</textarea></td>
+      <td><input type="checkbox" data-import-exclude="${record.id}" ${record.exclude ? "checked" : ""} /></td>
+    </tr>
+  `;
+}
+
+function bindAnteprimaImportazione() {
+  document.querySelectorAll("[data-import-pipeline]").forEach((input) => {
+    input.addEventListener("input", () => aggiornaRecordAnteprima(input.dataset.importPipeline, { suggestedPipeline: input.value }));
+  });
+  document.querySelectorAll("[data-import-stage]").forEach((select) => {
+    select.addEventListener("change", () => aggiornaRecordAnteprima(select.dataset.importStage, { suggestedStage: select.value }));
+  });
+  document.querySelectorAll("[data-import-tag]").forEach((input) => {
+    input.addEventListener("input", () =>
+      aggiornaRecordAnteprima(input.dataset.importTag, {
+        tagSuggeriti: input.value.split(",").map((tag) => tag.trim()).filter(Boolean)
       })
-    )
+    );
+  });
+  document.querySelectorAll("[data-import-priority]").forEach((select) => {
+    select.addEventListener("change", () => aggiornaRecordAnteprima(select.dataset.importPriority, { priorita: select.value }));
+  });
+  document.querySelectorAll("[data-import-note]").forEach((textarea) => {
+    textarea.addEventListener("input", () => aggiornaRecordAnteprima(textarea.dataset.importNote, { note: textarea.value }));
+  });
+  document.querySelectorAll("[data-import-exclude]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => aggiornaRecordAnteprima(checkbox.dataset.importExclude, { exclude: checkbox.checked }));
+  });
+}
+
+function renderOnboarding() {
+  const job = statoApp.importazioneLinkedin.job;
+  const records = recordAnteprimaFiltrati();
+  const riepilogo = statoApp.importazioneLinkedin.riepilogo;
+  const impostazioniAi = statoApp.impostazioniAi || {};
+  const limiteMb = statoApp.limiteZipBytes ? Math.round(statoApp.limiteZipBytes / 1024 / 1024) : 30;
+  areaPrincipale.innerHTML = `
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">CRM > Importa da LinkedIn</span>
+        <h1>Importazione Archivio LinkedIn</h1>
+        <p>Carica qui l'archivio ufficiale esportato da LinkedIn. Il sistema analizzerà contatti e conversazioni per organizzarli automaticamente nel CRM.</p>
+      </div>
+      <div class="header-actions">
+        <a class="ghost-btn" href="/contatti" data-link>Vai ai contatti</a>
+      </div>
+    </section>
+
+    <section class="upload-hero-grid">
+      <article class="upload-card upload-primary-card">
+        <span class="eyebrow">Upload</span>
+        <h3>Carica archivio ZIP</h3>
+        <div class="dropzone">
+          <strong>Seleziona l'archivio .zip esportato da LinkedIn</strong>
+          <p class="subtle">Limite attuale: ${limiteMb} MB. Il file viene validato, estratto in sicurezza e poi eliminato dalla cartella temporanea.</p>
+          <input type="file" id="file-input" accept=".zip" />
+        </div>
+        <div class="actions-row form-actions">
+          <button class="btn" id="importa-file">Avvia importazione</button>
+          <button class="ghost-btn" id="annulla-import" ${!job ? "disabled" : ""}>Annulla job</button>
+        </div>
+        <p class="subtle" id="stato-upload">${job ? `Job ${escapeHtml(job.status)} - ${escapeHtml(job.originalFileName)}` : "Nessun file selezionato."}</p>
+      </article>
+
+      <article class="upload-card">
+        <span class="eyebrow">Passaggi</span>
+        <h3>Guida passo passo</h3>
+        <div class="processing-list">
+          <div class="processing-item">1. Apri LinkedIn e vai in <strong>Impostazioni e privacy</strong>.</div>
+          <div class="processing-item">2. Apri <strong>Privacy dei dati</strong> e clicca <strong>Ottieni una copia dei tuoi dati</strong>.</div>
+          <div class="processing-item">3. Richiedi l'archivio completo o almeno connessioni e messaggi.</div>
+          <div class="processing-item">4. Quando LinkedIn invia il download, scarica il file <strong>.zip</strong> senza modificarlo.</div>
+          <div class="processing-item">5. Carica il file qui: il sistema troverà automaticamente contatti e conversazioni utili.</div>
+        </div>
+      </article>
+
+      <article class="upload-card">
+        <span class="eyebrow">Provider AI</span>
+        <h3>Configura analisi e classificazione</h3>
+        <form id="form-ai" class="stack-form">
+          <input type="text" name="provider" placeholder="Provider" value="${escapeHtml(impostazioniAi.provider || "openai-compatibile")}" />
+          <input type="text" name="endpoint" placeholder="Endpoint API" value="${escapeHtml(impostazioniAi.endpoint || "https://api.openai.com/v1/chat/completions")}" />
+          <input type="text" name="modello" placeholder="Modello" value="${escapeHtml(impostazioniAi.modello || "gpt-4.1-mini")}" />
+          <div class="dual-field">
+            <input type="number" step="0.1" min="0" max="2" name="temperatura" placeholder="Temperatura" value="${escapeHtml(String(impostazioniAi.temperatura ?? 0.2))}" />
+            <input type="number" min="100" max="4000" name="maxToken" placeholder="Max token" value="${escapeHtml(String(impostazioniAi.maxToken ?? 600))}" />
+          </div>
+          <input type="number" min="10" max="5000" name="limiteCrediti" placeholder="Limite crediti AI" value="${escapeHtml(String(impostazioniAi.limiteCrediti ?? 120))}" />
+          <input type="password" name="apiKey" placeholder="${impostazioniAi.chiaveConfigurata ? `Chiave salvata: ${escapeHtml(impostazioniAi.apiKeyMasked || "")}` : "API key"}" />
+          <button class="ghost-btn" type="submit" id="salva-ai">Salva provider AI</button>
+        </form>
+        <div class="metric-strip metric-strip-compact">
+          ${renderMetricCard("Crediti residui", impostazioniAi.creditiResidui ?? 120, "Contatore di sicurezza per le analisi AI")}
+          ${renderMetricCard("Crediti consumati", impostazioniAi.creditiConsumati ?? 0, "Scalati durante parsing e classificazione")}
+        </div>
+      </article>
+    </section>
+
+    <section class="workspace-panel import-destination-panel">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Smistamento automatico</span>
+          <h3>Dove vanno i dati dopo lo spacchettamento</h3>
+        </div>
+      </div>
+      <div class="landing-destination-grid import-destination-grid">
+        <div class="destination-card">
+          <strong>Contatti</strong>
+          <p>Connections.csv alimenta il CRM principale con record piu affidabili e gia puliti.</p>
+        </div>
+        <div class="destination-card">
+          <strong>Pipeline</strong>
+          <p>Ogni contatto riceve stato, stage e priorita in base a ruolo, messaggi e segnali raccolti.</p>
+        </div>
+        <div class="destination-card">
+          <strong>Da revisionare</strong>
+          <p>I record incerti o deboli, soprattutto da ImportedContacts.csv, restano in preview e non sporcano il CRM.</p>
+        </div>
+        <div class="destination-card">
+          <strong>Suggerimenti AI e Analytics</strong>
+          <p>Conversazioni, tag e classificazioni utili vengono riusati nelle sezioni operative della piattaforma.</p>
+        </div>
+      </div>
+    </section>
+
+    ${
+      job
+        ? `
+          <section class="workspace-panel">
+            <div class="section-head">
+              <div>
+                <span class="eyebrow">Stato importazione</span>
+                <h3>Job ${escapeHtml(job.originalFileName)}</h3>
+              </div>
+              <span class="pill ${job.status === "completed" ? "tone-success" : job.status === "failed" ? "tone-rose" : "tone-accent"}">${escapeHtml(job.status)}</span>
+            </div>
+            <div class="processing-list processing-grid">
+              ${(job.metadata?.stepStates || []).map(renderStepImportazione).join("")}
+            </div>
+            ${
+              job.metadata?.avvisi?.length
+                ? `<div class="info-banner">${job.metadata.avvisi.map((avviso) => `<p>${escapeHtml(avviso)}</p>`).join("")}</div>`
+                : ""
+            }
+            <div class="metric-strip">
+              ${renderMetricCard("File utili", job.metadata?.fileUtili?.length || 0, "File riconosciuti nell'archivio")}
+              ${renderMetricCard("Contatti trovati", job.totalContactsFound || 0, "Record normalizzati")}
+              ${renderMetricCard("Conversazioni", job.totalConversationsFound || 0, "Thread collegati ai contatti")}
+              ${renderMetricCard("Duplicati", job.totalDuplicatesFound || 0, "Match con il CRM esistente")}
+            </div>
+          </section>
+        `
+        : ""
+    }
+
+    ${
+      records.length
+        ? `
+          <section class="workspace-panel">
+            <div class="section-head">
+              <div>
+                <span class="eyebrow">Anteprima importazione</span>
+                <h3>Rivedi prima di scrivere nel CRM</h3>
+              </div>
+              <div class="actions-row">
+                <button class="ghost-btn" id="escludi-duplicati">Escludi duplicati</button>
+                <button class="btn" id="conferma-importazione">Conferma importazione</button>
+              </div>
+            </div>
+            <div class="metric-strip">
+              ${renderMetricCard("Nuovi", riepilogo?.nuovi || 0, "Contatti da creare")}
+              ${renderMetricCard("Duplicati", riepilogo?.duplicati || 0, "Contatti esistenti da aggiornare")}
+              ${renderMetricCard("Da revisionare", riepilogo?.daRevisionare || 0, "Confidence bassa o dati incompleti")}
+              ${renderMetricCard("Esclusi auto", riepilogo?.esclusiAuto || 0, "Record deboli filtrati prima del CRM")}
+            </div>
+            <div class="preset-row import-source-row">
+              <button class="preset-chip ${statoApp.importazioneLinkedin.filtroFonte === "tutti" ? "is-selected" : ""}" data-source-filter="tutti">Tutti (${statoApp.importazioneLinkedin.records.length})</button>
+              <button class="preset-chip ${statoApp.importazioneLinkedin.filtroFonte === "connections" ? "is-selected" : ""}" data-source-filter="connections">Connections.csv (${riepilogo?.connections || 0})</button>
+              <button class="preset-chip ${statoApp.importazioneLinkedin.filtroFonte === "imported_contacts" ? "is-selected" : ""}" data-source-filter="imported_contacts">ImportedContacts.csv (${riepilogo?.importedContacts || 0})</button>
+            </div>
+            <div class="table-shell preview-shell">
+              <table class="data-table preview-table">
+                <thead>
+                  <tr>
+                    <th>Contatto</th>
+                    <th>Ruolo</th>
+                    <th>Tipologia</th>
+                    <th>Sorgente</th>
+                    <th>Qualità</th>
+                    <th>Esito</th>
+                    <th>Pipeline</th>
+                    <th>Stage</th>
+                    <th>Tag</th>
+                    <th>Priorità</th>
+                    <th>Ultima conversazione</th>
+                    <th>Sintesi AI</th>
+                    <th>Intento</th>
+                    <th>Confidence</th>
+                    <th>Note</th>
+                    <th>Escludi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${records.length ? records.map(renderRigaAnteprimaImport).join("") : `<tr><td colspan="16"><div class="empty-state"><strong>Nessun record in questo gruppo.</strong><p>Cambia filtro sorgente per continuare la revisione.</p></div></td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        `
+        : ""
+    }
+  `;
+
+  document.getElementById("file-input")?.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    document.getElementById("stato-upload").textContent = file ? `${file.name} selezionato.` : "Nessun file selezionato.";
+  });
+
+  document.getElementById("importa-file")?.addEventListener("click", (event) =>
+    conBottoneInCaricamento(event.currentTarget, "Analizzo archivio...", async () => {
+      const file = document.getElementById("file-input").files?.[0];
+      if (!file) {
+        mostraToast("Seleziona un archivio ZIP");
+        return;
+      }
+      await inviaArchivioLinkedin(file);
+      aggiornaMetaSidebar();
+      renderOnboarding();
+      mostraToast("Anteprima importazione pronta");
+    })
   );
 
-  document.querySelectorAll("[data-rm-det-sottoscritta]").forEach(btn =>
-    btn.addEventListener("click", e =>
-      conBottone(e.currentTarget, "…", async () => {
-        await assegnaOffertaContatto(btn.dataset.rmDetSottoscritta, c.id, "offerteSottoscritteIds", false);
-        mostraToast("Offerta rimossa dalle sottoscrizioni");
-        await ricaricaScheda();
-      })
-    )
+  document.getElementById("annulla-import")?.addEventListener("click", (event) =>
+    conBottoneInCaricamento(event.currentTarget, "Annullamento...", async () => {
+      await annullaImportazioneLinkedin();
+      renderOnboarding();
+      mostraToast("Job annullato");
+    })
   );
 
-  document.getElementById("btn-add-proposta")?.addEventListener("click", e => {
-    const sel = document.getElementById("det-add-proposta");
-    if (!sel?.value) { mostraToast("Seleziona un'offerta"); return; }
-    conBottone(e.currentTarget, "…", async () => {
-      await assegnaOffertaContatto(sel.value, c.id, "offerteProposteIds", true);
-      mostraToast("Offerta aggiunta alle proposte");
-      await ricaricaScheda();
+  document.getElementById("form-ai")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await conBottoneInCaricamento(document.getElementById("salva-ai"), "Salvo...", async () => {
+      await salvaImpostazioniAiLinkedin(new FormData(event.currentTarget));
+      renderOnboarding();
     });
   });
 
-  document.getElementById("btn-add-sottoscritta")?.addEventListener("click", e => {
-    const sel = document.getElementById("det-add-sottoscritta");
-    if (!sel?.value) { mostraToast("Seleziona un'offerta"); return; }
-    conBottone(e.currentTarget, "…", async () => {
-      await assegnaOffertaContatto(sel.value, c.id, "offerteSottoscritteIds", true);
-      mostraToast("Offerta aggiunta alle sottoscrizioni");
-      await ricaricaScheda();
+  document.getElementById("escludi-duplicati")?.addEventListener("click", () => {
+    statoApp.importazioneLinkedin.records = statoApp.importazioneLinkedin.records.map((record) =>
+      record.status === "duplicate" ? { ...record, exclude: true } : record
+    );
+    renderOnboarding();
+  });
+
+  document.getElementById("conferma-importazione")?.addEventListener("click", (event) =>
+    conBottoneInCaricamento(event.currentTarget, "Importo nel CRM...", async () => {
+      await confermaImportazioneLinkedin();
+      renderOnboarding();
+      mostraToast("Importazione completata");
+    })
+  );
+
+  document.querySelectorAll("[data-source-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      statoApp.importazioneLinkedin.filtroFonte = button.dataset.sourceFilter;
+      renderOnboarding();
+    });
+  });
+
+  bindAnteprimaImportazione();
+}
+
+function renderLanding() {
+  impostaLayout("public");
+  areaPrincipale.innerHTML = `
+    <section class="landing-shell">
+      <article class="landing-hero">
+        <div class="landing-copy">
+          <span class="eyebrow">LinkedIn archive to CRM</span>
+          <h1>Carichi lo ZIP ufficiale di LinkedIn, Aito Business lo organizza nel tuo CRM.</h1>
+          <p>La piattaforma valida l'archivio, legge connessioni e conversazioni, deduplica i contatti e li distribuisce in Contatti, Pipeline, Suggerimenti AI e Analytics.</p>
+          <div class="hero-actions landing-actions">
+            <a class="btn" href="/registrati" data-link>Crea il tuo account</a>
+            <a class="ghost-btn" href="/accesso" data-link>Accedi</a>
+          </div>
+          <div class="landing-mini-grid">
+            <div class="landing-mini-card">
+              <span class="eyebrow">1. Upload ZIP</span>
+              <strong>Archivio LinkedIn ufficiale</strong>
+              <p>Caricamento web, validazione del file e apertura sicura.</p>
+            </div>
+            <div class="landing-mini-card">
+              <span class="eyebrow">2. Parsing</span>
+              <strong>Contatti e messaggi</strong>
+              <p>Il sistema riconosce automaticamente Connections.csv, ImportedContacts.csv e messages.csv.</p>
+            </div>
+            <div class="landing-mini-card">
+              <span class="eyebrow">3. Smistamento</span>
+              <strong>CRM coerente</strong>
+              <p>I record finiscono nelle sezioni corrette con deduplica, preview e conferma finale.</p>
+            </div>
+          </div>
+        </div>
+        <div class="landing-panel">
+          <span class="eyebrow">Accessi</span>
+          <h3>Accesso semplice per utenti e amministrazione</h3>
+          <div class="landing-action-list">
+            <a class="landing-link-card" href="/registrati" data-link>
+              <strong>Registrazione utente</strong>
+              <span>Crea il workspace personale e inizia con l'importazione LinkedIn.</span>
+            </a>
+            <a class="landing-link-card" href="/accesso" data-link>
+              <strong>Login piattaforma</strong>
+              <span>Accedi al tuo CRM, alle pipeline e alla sezione import.</span>
+            </a>
+            <a class="landing-link-card" href="/admin/login" data-link>
+              <strong>Login amministrazione</strong>
+              <span>Area separata per vedere tutti gli utenti registrati e il riepilogo della piattaforma.</span>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <section class="landing-flow-grid">
+        <article class="panel-card">
+          <span class="eyebrow">Dove vanno i dati</span>
+          <h3>Smistamento automatico dopo lo ZIP</h3>
+          <div class="landing-destination-grid">
+            <div class="destination-card">
+              <strong>Contatti</strong>
+              <p>Profili deduplicati, arricchiti con ruolo, azienda, tipologia e priorita.</p>
+            </div>
+            <div class="destination-card">
+              <strong>Pipeline</strong>
+              <p>Ogni contatto riceve stage e stato coerenti in base a segnali e conversazioni.</p>
+            </div>
+            <div class="destination-card">
+              <strong>Suggerimenti AI</strong>
+              <p>Messaggi consigliati, insight e prossima azione per ogni record utile.</p>
+            </div>
+            <div class="destination-card">
+              <strong>Analytics</strong>
+              <p>I dati importati alimentano grafici, distribuzioni e tracking operativo.</p>
+            </div>
+          </div>
+        </article>
+      </section>
+    </section>
+  `;
+}
+
+function renderAuth(tipo = "login") {
+  const configurazioni = {
+    login: {
+      modalita: "auth",
+      eyebrow: "Accesso piattaforma",
+      titolo: "Accedi al tuo workspace",
+      descrizione: "Entra nella piattaforma per usare CRM, pipeline, offerte e importazione archivio LinkedIn.",
+      endpoint: "/api/auth/login",
+      submitId: "auth-submit",
+      submitLabel: "Accedi",
+      submitBusy: "Accesso...",
+      campi: `
+        <input type="email" name="email" placeholder="Email" required />
+        <input type="password" name="password" placeholder="Password" required />
+      `,
+      payload: (formData) => ({
+        email: formData.get("email"),
+        password: formData.get("password")
+      }),
+      destinazione: "/dashboard",
+      linkSecondario: `<p class="auth-helper">Non hai ancora un account? <a href="/registrati" data-link>Registrati</a></p>`
+    },
+    register: {
+      modalita: "auth",
+      eyebrow: "Registrazione utente",
+      titolo: "Crea il tuo account",
+      descrizione: "Apri un nuovo workspace personale. Dopo la registrazione puoi caricare subito il file ZIP di LinkedIn.",
+      endpoint: "/api/auth/register",
+      submitId: "auth-submit",
+      submitLabel: "Registrati",
+      submitBusy: "Creo account...",
+      campi: `
+        <input type="text" name="nome" placeholder="Nome e cognome" required />
+        <input type="email" name="email" placeholder="Email" required />
+        <input type="password" name="password" placeholder="Password" required />
+      `,
+      payload: (formData) => ({
+        nome: formData.get("nome"),
+        email: formData.get("email"),
+        password: formData.get("password")
+      }),
+      destinazione: "/dashboard",
+      linkSecondario: `<p class="auth-helper">Hai gia un account? <a href="/accesso" data-link>Accedi</a></p>`
+    },
+    admin: {
+      modalita: "admin",
+      eyebrow: "Accesso amministrazione",
+      titolo: "Area amministrativa",
+      descrizione: "Login separato per vedere utenti registrati, contatti salvati e stato generale della piattaforma.",
+      endpoint: "/api/auth/admin-login",
+      submitId: "auth-submit",
+      submitLabel: "Accedi come admin",
+      submitBusy: "Verifico accesso...",
+      campi: `
+        <input type="email" name="email" placeholder="Email amministratore" required />
+        <input type="password" name="password" placeholder="Password" required />
+      `,
+      payload: (formData) => ({
+        email: formData.get("email"),
+        password: formData.get("password")
+      }),
+      destinazione: "/admin",
+      linkSecondario: `<p class="auth-helper">Accesso utente standard? <a href="/accesso" data-link>Vai al login piattaforma</a></p>`
+    }
+  };
+
+  const config = configurazioni[tipo] || configurazioni.login;
+  impostaLayout(config.modalita);
+  areaPrincipale.innerHTML = `
+    <section class="auth-shell">
+      <article class="auth-main-card">
+        <span class="eyebrow">${escapeHtml(config.eyebrow)}</span>
+        <h1>${escapeHtml(config.titolo)}</h1>
+        <p>${escapeHtml(config.descrizione)}</p>
+        <form id="auth-form" class="stack-form auth-form">
+          ${config.campi}
+          <button class="btn" id="${config.submitId}" type="submit">${escapeHtml(config.submitLabel)}</button>
+        </form>
+        ${config.linkSecondario}
+      </article>
+      <article class="auth-side-card">
+        <span class="eyebrow">Flusso operativo</span>
+        <h3>Dopo il login il sistema fa questo lavoro</h3>
+        <div class="auth-benefit-list">
+          <div class="auth-benefit-item">
+            <strong>Upload ZIP LinkedIn</strong>
+            <p>Archivio validato e aperto in sicurezza, senza scraping e senza desktop app.</p>
+          </div>
+          <div class="auth-benefit-item">
+            <strong>Preview prima del salvataggio</strong>
+            <p>Controlli nuovi record, duplicati, revisioni e stage suggeriti prima di scrivere nel CRM.</p>
+          </div>
+          <div class="auth-benefit-item">
+            <strong>Smistamento automatico</strong>
+            <p>Contatti, pipeline, suggerimenti AI e analytics restano coerenti e sincronizzati.</p>
+          </div>
+        </div>
+        <div class="info-banner">
+          <p>Link amministrazione: <strong>/admin/login</strong></p>
+        </div>
+      </article>
+    </section>
+  `;
+
+  document.getElementById("auth-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await conBottoneInCaricamento(document.getElementById(config.submitId), config.submitBusy, async () => {
+      const formData = new FormData(event.currentTarget);
+      await api(config.endpoint, {
+        method: "POST",
+        body: JSON.stringify(config.payload(formData))
+      });
+      await caricaDati();
+      navigate(config.destinazione);
     });
   });
 }
 
-/* ─────────────── PIPELINE (KANBAN) ─────────────── */
+async function renderAdminDashboard() {
+  impostaLayout("admin");
+  await caricaAdmin();
+  const riepilogo = statoApp.admin.riepilogo || {};
+  areaPrincipale.innerHTML = `
+    <section class="admin-shell">
+      <section class="page-header admin-header">
+        <div>
+          <span class="eyebrow">Amministrazione</span>
+          <h1>Utenti registrati sulla piattaforma</h1>
+          <p>Vista centralizzata per controllare account creati, volume contatti e utilizzo delle importazioni LinkedIn.</p>
+        </div>
+        <div class="header-actions">
+          <a class="ghost-btn" href="/dashboard" data-link>Apri piattaforma</a>
+          <button class="btn" id="admin-logout">Logout</button>
+        </div>
+      </section>
+
+      <section class="metrics-grid admin-metrics-grid">
+        ${renderMetricCard("Utenti", riepilogo.totaleUtenti || 0, "Account registrati", "metric-ink")}
+        ${renderMetricCard("Admin", riepilogo.totaleAdmin || 0, "Accessi amministrativi", "metric-accent")}
+        ${renderMetricCard("Contatti", riepilogo.totaleContatti || 0, "Record CRM salvati", "metric-gold")}
+        ${renderMetricCard("Importazioni", riepilogo.totaleImportazioni || 0, "Job LinkedIn registrati", "metric-muted")}
+      </section>
+
+      <section class="panel-card admin-users-card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Directory utenti</span>
+            <h3>Tutti gli account</h3>
+          </div>
+          <span class="subtle">${statoApp.admin.utenti.length} account visibili</span>
+        </div>
+        <div class="table-card">
+          <table class="contacts-table">
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Email</th>
+                <th>Ruolo</th>
+                <th>Contatti</th>
+                <th>Importazioni</th>
+                <th>Creato il</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                statoApp.admin.utenti.length
+                  ? statoApp.admin.utenti
+                      .map(
+                        (utente) => `
+                          <tr>
+                            <td><strong>${escapeHtml(utente.nome)}</strong></td>
+                            <td>${escapeHtml(utente.email)}</td>
+                            <td><span class="pill lead-type-pill">${escapeHtml(utente.ruolo)}</span></td>
+                            <td>${escapeHtml(String(utente.totale_contatti || 0))}</td>
+                            <td>${escapeHtml(String(utente.totale_importazioni || 0))}</td>
+                            <td>${escapeHtml(formattaData(utente.created_at))}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")
+                  : `<tr><td colspan="6"><div class="empty-state"><strong>Nessun utente trovato.</strong><p>La piattaforma mostera qui tutte le nuove registrazioni.</p></div></td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  `;
+
+  document.getElementById("admin-logout")?.addEventListener("click", () => eseguiLogout("/admin/login"));
+}
+
 function renderPipeline() {
   areaPrincipale.innerHTML = `
-    <div class="page-header">
-      <span class="eyebrow">Pipeline</span>
-      <h1>Kanban commerciale</h1>
-      <p>Trascina le card tra le colonne per aggiornare lo stato nel database. Scorri orizzontalmente per vedere tutti gli stati.</p>
-    </div>
-    <div class="kanban-wrap">
-      <div class="kanban-board">
-        ${statoApp.statiPipeline.map(stato => {
-          const lista = statoApp.contatti.filter(c => c.stato === stato);
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">Pipeline</span>
+        <h1>Kanban commerciale</h1>
+        <p>Ogni colonna rappresenta uno stato. Trascina le card per aggiornare lo stato nel database.</p>
+      </div>
+    </section>
+
+    <section class="kanban-board">
+      ${statoApp.statiPipeline
+        .map((stato) => {
+          const contatti = statoApp.contatti.filter((contatto) => contatto.stato === stato);
           return `
-            <div class="kanban-col" data-drop-stato="${escapeHtml(stato)}">
-              <div class="kanban-col-head">
-                <span class="eyebrow">${escapeHtml(stato)}</span>
-                <span class="kanban-col-count">${lista.length}</span>
+            <div class="kanban-column" data-drop-stato="${escapeHtml(stato)}">
+              <div class="kanban-head">
+                <div>
+                  <span class="eyebrow">${escapeHtml(stato)}</span>
+                  <strong>${contatti.length}</strong>
+                </div>
               </div>
               <div class="kanban-list">
-                ${lista.map(c => `
-                  <article class="kanban-card" draggable="true" data-drag-id="${c.id}">
-                    <div class="kanban-card-top">
-                      <span class="avatar">${iniziali(c.nome)}</span>
-                      <div>
-                        <strong>${escapeHtml(c.nome)}</strong>
-                        <p>${escapeHtml(c.ruolo)}</p>
-                      </div>
-                    </div>
-                    <div class="kanban-card-pills">
-                      <span class="pill pill-${c.livelloPriorita.toLowerCase()}">${escapeHtml(c.livelloPriorita)}</span>
-                      <span class="pill ${c.tipologiaContatto === 'Potenziale Partner' ? 'pill-partner' : 'pill-cliente'}">${c.tipologiaContatto === 'Potenziale Partner' ? 'Partner' : 'Cliente'}</span>
-                    </div>
-                    <div class="kanban-card-actions">
-                      <button class="small-btn" data-dettaglio="${c.id}">Open</button>
-                      <button class="small-btn" data-copy="${c.id}">Copy</button>
-                    </div>
-                  </article>`).join("")}
+                ${contatti
+                  .map(
+                    (contatto) => `
+                      <article class="kanban-card" draggable="true" data-drag-id="${contatto.id}">
+                        <div class="kanban-card-top">
+                          <span class="avatar">${iniziali(contatto.nome)}</span>
+                          <div>
+                            <strong>${escapeHtml(contatto.nome)}</strong>
+                            <p>${escapeHtml(contatto.ruolo)}</p>
+                          </div>
+                        </div>
+                        <div class="kanban-card-meta">
+                          <span class="pill priority-pill priority-${contatto.livelloPriorita.toLowerCase()}">${escapeHtml(contatto.livelloPriorita)}</span>
+                          <span class="pill lead-type-pill">${escapeHtml(contatto.tipologiaContatto)}</span>
+                        </div>
+                        <div class="actions-row">
+                          <button class="small-btn" data-dettaglio="${contatto.id}">Open</button>
+                          <button class="small-btn" data-copy="${contatto.id}">Copy</button>
+                        </div>
+                      </article>
+                    `
+                  )
+                  .join("")}
               </div>
-            </div>`;
-        }).join("")}
-      </div>
-    </div>`;
+            </div>
+          `;
+        })
+        .join("")}
+    </section>
+  `;
 
   bindDettaglioContatto();
-  document.querySelectorAll("[data-copy]").forEach(btn =>
-    btn.addEventListener("click", () => {
-      const c = trovaContatto(btn.dataset.copy);
-      if (c) copiaTesto(c.messaggioSuggerito, btn);
-    })
-  );
+  document.querySelectorAll("[data-copy]").forEach((bottone) => {
+    bottone.addEventListener("click", () => {
+      const contatto = trovaContatto(bottone.dataset.copy);
+      copiaTesto(contatto.messaggioSuggerito, bottone);
+    });
+  });
 
-  document.querySelectorAll("[data-drag-id]").forEach(card => {
+  document.querySelectorAll("[data-drag-id]").forEach((card) => {
     card.addEventListener("dragstart", () => {
       idContattoDrag = card.dataset.dragId;
       card.classList.add("is-dragging");
@@ -941,905 +1624,425 @@ function renderPipeline() {
     });
   });
 
-  document.querySelectorAll("[data-drop-stato]").forEach(col => {
-    col.addEventListener("dragover", e => { e.preventDefault(); col.classList.add("is-drop-target"); });
-    col.addEventListener("dragleave", () => col.classList.remove("is-drop-target"));
-    col.addEventListener("drop", async e => {
-      e.preventDefault();
-      col.classList.remove("is-drop-target");
+  document.querySelectorAll("[data-drop-stato]").forEach((colonna) => {
+    colonna.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      colonna.classList.add("is-drop-target");
+    });
+    colonna.addEventListener("dragleave", () => {
+      colonna.classList.remove("is-drop-target");
+    });
+    colonna.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      colonna.classList.remove("is-drop-target");
       if (!idContattoDrag) return;
-      const nuovoStato = col.dataset.dropStato;
-      const c = trovaContatto(idContattoDrag);
-      if (!c || c.stato === nuovoStato) return;
-      await aggiornaContatto(idContattoDrag, {
-        stato: nuovoStato,
-        ultimoContatto: oggi(),
-        aggiungiEventoTimeline: { tipo:"stato", testo:`Spostato in ${nuovoStato}` }
-      }, `Spostato in ${nuovoStato}`);
-      renderRoute();
+      const nuovoStato = colonna.dataset.dropStato;
+      const corrente = trovaContatto(idContattoDrag);
+      if (!corrente || corrente.stato === nuovoStato) return;
+      await aggiornaContatto(
+        idContattoDrag,
+        {
+          stato: nuovoStato,
+          ultimoContatto: oggi(),
+          aggiungiEventoTimeline: {
+            tipo: "stato",
+            testo: `Spostato in ${nuovoStato}`
+          }
+        },
+        `Contatto spostato in ${nuovoStato}`
+      );
+      renderRoute(trovaContatto(idContattoDrag));
     });
   });
 }
 
-/* ─────────────── OFFERTE ─────────────── */
 function renderOfferte() {
-  const opzioniContatti = statoApp.contatti
-    .map(c => `<option value="${c.id}">${escapeHtml(c.nome)} — ${escapeHtml(c.azienda)}</option>`)
-    .join("");
-
   areaPrincipale.innerHTML = `
-    <div class="page-header-row">
-      <div class="page-header">
-        <span class="eyebrow">Catalogo offerte</span>
-        <h1>Offerte</h1>
-        <p>Crea, modifica e collega le offerte ai contatti. Proposte e sottoscrizioni tracciate per ogni persona.</p>
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">Offerte</span>
+        <h1>Catalogo offerte</h1>
+        <p>Offerte dell'azienda e dei partner, collegate automaticamente ai contatti in base a tipologia, settore e bisogni stimati.</p>
       </div>
-      <div class="header-actions">
-        <button class="btn" id="nuova-offerta">+ Nuova offerta</button>
-      </div>
-    </div>
+    </section>
 
-    <div class="offers-grid">
-      ${statoApp.offerte.length === 0
-        ? `<div class="empty-state"><strong>Nessuna offerta.</strong><p>Crea la prima offerta con il pulsante in alto.</p></div>`
-        : statoApp.offerte.map(o => {
-          const proposti     = statoApp.contatti.filter(c => (c.offerteProposteIds||[]).includes(o.id));
-          const sottoscritti = statoApp.contatti.filter(c => (c.offerteSottoscritteIds||[]).includes(o.id));
-          const badgeCls     = o.tipologia === "partner" ? "offer-type-partner" : "offer-type-azienda";
+    <section class="offers-grid">
+      ${statoApp.offerte
+        .map((offerta) => {
+          const collegati = statoApp.contatti.filter((contatto) => (contatto.offerteProposteIds || []).includes(offerta.id));
           return `
-            <article class="offer-card" data-offer-id="${o.id}">
-              <div class="offer-card-head">
-                <span class="offer-type-badge ${badgeCls}">${escapeHtml(o.tipologia)}</span>
-                <div class="offer-card-actions">
-                  <button class="small-btn" data-edit-offer="${o.id}">Modifica</button>
-                  <button class="small-btn btn-danger" data-delete-offer="${o.id}">Elimina</button>
-                </div>
+            <article class="offer-card">
+              <span class="eyebrow">${escapeHtml(offerta.tipologia)}</span>
+              <h3>${escapeHtml(offerta.nome)}</h3>
+              <p>${escapeHtml(offerta.descrizione)}</p>
+              <div class="offer-meta">
+                <div><span>Prezzo</span><strong>${escapeHtml(offerta.prezzo)}</strong></div>
+                <div><span>Partner %</span><strong>${escapeHtml(offerta.percentualePartner)}</strong></div>
               </div>
-              <h3 style="margin:10px 0 6px">${escapeHtml(o.nome)}</h3>
-              <p class="subtle text-sm">${escapeHtml(o.descrizione)}</p>
-              <div class="offer-meta-grid" style="margin-top:12px">
-                <div><span>Prezzo</span><strong>${escapeHtml(o.prezzo)}</strong></div>
-                <div><span>% Partner</span><strong>${escapeHtml(o.percentualePartner)}</strong></div>
+              <div class="offer-linked">
+                <span class="eyebrow">Contatti collegati</span>
+                ${
+                  collegati.length
+                    ? collegati
+                        .map((contatto) => `<button class="small-btn" data-dettaglio="${contatto.id}">${escapeHtml(contatto.nome)}</button>`)
+                        .join("")
+                    : `<span class="subtle">Nessun contatto collegato</span>`
+                }
               </div>
-
-              <div class="offer-section">
-                <span class="eyebrow">Proposte a (${proposti.length})</span>
-                <div class="linked-contacts-list">
-                  ${proposti.map(c => `
-                    <div class="linked-contact-row">
-                      <button class="small-btn" data-dettaglio="${c.id}">${escapeHtml(c.nome)}</button>
-                      <button class="icon-remove-btn" data-rm-proposta="${c.id}" data-rm-offer="${o.id}" title="Rimuovi">×</button>
-                    </div>`).join("") || `<span class="subtle text-sm">Nessuno</span>`}
-                </div>
-              </div>
-
-              <div class="offer-section">
-                <span class="eyebrow">Sottoscritti (${sottoscritti.length})</span>
-                <div class="linked-contacts-list">
-                  ${sottoscritti.map(c => `
-                    <div class="linked-contact-row">
-                      <button class="small-btn" data-dettaglio="${c.id}">${escapeHtml(c.nome)}</button>
-                      <button class="icon-remove-btn" data-rm-sottoscritta="${c.id}" data-rm-offer="${o.id}" title="Rimuovi">×</button>
-                    </div>`).join("") || `<span class="subtle text-sm">Nessuno</span>`}
-                </div>
-              </div>
-
-              <div class="offer-assign-form">
-                <span class="eyebrow" style="display:block;margin-bottom:8px">Assegna a contatto</span>
-                <div class="assign-row">
-                  <select class="assign-contact-sel" data-for-offer="${o.id}">
-                    <option value="">Seleziona contatto…</option>
-                    ${opzioniContatti}
-                  </select>
-                  <select class="assign-type-sel" data-type-for="${o.id}">
-                    <option value="offerteProposteIds">Proposta</option>
-                    <option value="offerteSottoscritteIds">Sottoscritta</option>
-                  </select>
-                  <button class="small-btn" data-assign-btn="${o.id}">Assegna</button>
-                </div>
-              </div>
-            </article>`;
-        }).join("")}
-    </div>`;
-
-  document.getElementById("nuova-offerta")?.addEventListener("click", () => mostraModaleOfferta());
-
-  document.querySelectorAll("[data-edit-offer]").forEach(btn =>
-    btn.addEventListener("click", () => {
-      const o = statoApp.offerte.find(x => x.id === btn.dataset.editOffer);
-      if (o) mostraModaleOfferta(o);
-    })
-  );
-
-  document.querySelectorAll("[data-delete-offer]").forEach(btn =>
-    btn.addEventListener("click", e =>
-      conBottone(e.currentTarget, "…", async () => {
-        if (!confirm("Eliminare questa offerta?")) return;
-        await eliminaOfferta(btn.dataset.deleteOffer);
-        mostraToast("Offerta eliminata");
-        renderRoute();
-      })
-    )
-  );
-
-  document.querySelectorAll("[data-rm-proposta]").forEach(btn =>
-    btn.addEventListener("click", e =>
-      conBottone(e.currentTarget, "…", async () => {
-        await assegnaOffertaContatto(btn.dataset.rmOffer, btn.dataset.rmProposta, "offerteProposteIds", false);
-        mostraToast("Rimosso dalle proposte");
-        renderRoute();
-      })
-    )
-  );
-
-  document.querySelectorAll("[data-rm-sottoscritta]").forEach(btn =>
-    btn.addEventListener("click", e =>
-      conBottone(e.currentTarget, "…", async () => {
-        await assegnaOffertaContatto(btn.dataset.rmOffer, btn.dataset.rmSottoscritta, "offerteSottoscritteIds", false);
-        mostraToast("Rimosso dalle sottoscrizioni");
-        renderRoute();
-      })
-    )
-  );
-
-  document.querySelectorAll("[data-assign-btn]").forEach(btn =>
-    btn.addEventListener("click", e => {
-      const oid = btn.dataset.assignBtn;
-      const contactSel = document.querySelector(`[data-for-offer="${oid}"]`);
-      const typeSel    = document.querySelector(`[data-type-for="${oid}"]`);
-      const cid  = contactSel?.value;
-      const campo = typeSel?.value;
-      if (!cid) { mostraToast("Seleziona un contatto"); return; }
-      conBottone(e.currentTarget, "…", async () => {
-        await assegnaOffertaContatto(oid, cid, campo, true);
-        const label = campo === "offerteSottoscritteIds" ? "sottoscrizione" : "proposta";
-        mostraToast(`Offerta aggiunta come ${label}`);
-        renderRoute();
-      });
-    })
-  );
+            </article>
+          `;
+        })
+        .join("")}
+    </section>
+  `;
 
   bindDettaglioContatto();
 }
 
-/* ─────────────── ANALYTICS ─────────────── */
 function renderAnalytics() {
   const tutti = statoApp.contatti;
-  const partner = tutti.filter(c => (c.offerteProposteIds||[]).some(id => trovaOfferta(id)?.tipologia === "partner"));
+  const subsetRuolo = [
+    { titolo: "Ruolo · Tutti i contatti", lista: tutti },
+    { titolo: "Ruolo · Contatti con call", lista: contattiConCall(tutti) },
+    { titolo: "Ruolo · Abbonati", lista: tutti.filter((contatto) => contatto.stato === "Abbonato") },
+    { titolo: "Ruolo · KO", lista: tutti.filter((contatto) => contatto.stato === "KO") },
+    { titolo: "Ruolo · Disdettati", lista: tutti.filter((contatto) => contatto.stato === "Disdettato") }
+  ];
+
+  const subsetTipologia = [
+    { titolo: "Tipologia · Tutti i contatti", lista: tutti },
+    { titolo: "Tipologia · Contatti con call", lista: contattiConCall(tutti) },
+    { titolo: "Tipologia · Abbonati", lista: tutti.filter((contatto) => contatto.stato === "Abbonato") },
+    { titolo: "Tipologia · KO", lista: tutti.filter((contatto) => contatto.stato === "KO") },
+    { titolo: "Tipologia · Disdettati", lista: tutti.filter((contatto) => contatto.stato === "Disdettato") }
+  ];
+
+  const contattiPartnerPerOfferta = (idOfferta) =>
+    contattiAssociatiAOfferta(idOfferta).filter((contatto) => contatto.tipologiaContatto === "Potenziale Partner");
+  const contattiClientiPerOfferta = (idOfferta) =>
+    contattiAssociatiAOfferta(idOfferta).filter((contatto) => contatto.tipologiaContatto === "Potenziale Cliente");
+  const contattiConOffertePartner = statoApp.contatti.filter((contatto) =>
+    (contatto.offerteProposteIds || []).some((id) => trovaOfferta(id)?.tipologia === "partner")
+  );
 
   areaPrincipale.innerHTML = `
-    <div class="page-header">
-      <span class="eyebrow">Analytics</span>
-      <h1>Distribuzioni CRM</h1>
-      <p>Grafici costruiti sui dati reali: ruoli, tipologie, stati di pipeline e breakdown per offerta.</p>
-    </div>
-
-    <div class="metrics-grid">
-      ${metricCard("Totale contatti", tutti.length, "In piattaforma", "metric-ink")}
-      ${metricCard("Con call", contattiConCall(tutti).length, "Call effettuate", "metric-accent")}
-      ${metricCard("Abbonati", tutti.filter(c=>c.stato==="Abbonato").length, "Attivi", "metric-gold")}
-      ${metricCard("KO", tutti.filter(c=>c.stato==="KO").length, "Chiusi negativi", "metric-muted")}
-    </div>
-
-    <div class="analytics-section">
-      <div class="section-head"><div><span class="eyebrow">Ruolo</span><h3>Distribuzione per ruolo</h3></div></div>
-      <div class="charts-grid">
-        ${renderChartTorta("Tutti i contatti", distribuzioneFrequenza(tutti, c=>c.ruolo))}
-        ${renderChartTorta("Contatti con call", distribuzioneFrequenza(contattiConCall(tutti), c=>c.ruolo))}
-        ${renderChartBarre("Stati pipeline · Generale", distribuzioneStati(tutti))}
-        ${renderChartBarre("Stati · Potenziali partner", distribuzioneStati(tutti.filter(c=>c.tipologiaContatto==="Potenziale Partner")))}
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">Analytics</span>
+        <h1>Distribuzioni e andamento CRM</h1>
+        <p>Grafici costruiti sui dati reali del CRM: ruoli, tipologie, stati di pipeline e breakdown per offerta.</p>
       </div>
-    </div>
+    </section>
 
-    <div class="analytics-section">
-      <div class="section-head"><div><span class="eyebrow">Per offerta</span><h3>Breakdown dettagliato</h3></div></div>
-      ${statoApp.offerte.map(o => {
-        const ass = contattiPerOfferta(o.id);
-        return `
-          <div class="offer-analytics-card" style="margin-top:14px">
-            <div class="section-head">
-              <div><span class="eyebrow">${escapeHtml(o.tipologia)}</span><h3>${escapeHtml(o.nome)}</h3></div>
-              <strong>${ass.length} contatti</strong>
-            </div>
-            <div class="charts-grid">
-              ${renderChartTorta("Ruolo", distribuzioneFrequenza(ass, c=>c.ruolo))}
-              ${renderChartTorta("Tipologia", distribuzioneFrequenza(ass, c=>c.tipologiaContatto))}
-              ${renderChartBarre("Stati", distribuzioneStati(ass))}
-            </div>
-          </div>`;
-      }).join("")}
-    </div>`;
+    <section class="metrics-grid">
+      ${renderMetricCard("Grafici ruolo", subsetRuolo.length, "Distribuzioni a torta per ruolo", "metric-ink")}
+      ${renderMetricCard("Grafici tipologia", subsetTipologia.length, "Distribuzioni a torta per tipologia", "metric-accent")}
+      ${renderMetricCard("Bar chart globali", 4, "Stati su segmenti principali", "metric-gold")}
+      ${renderMetricCard("Offerte analizzate", statoApp.offerte.length, "Breakdown per singola offerta", "metric-muted")}
+    </section>
+
+    <section class="analytics-section">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Ruolo</span>
+          <h3>Distribuzioni a torta</h3>
+        </div>
+      </div>
+      <div class="analytics-grid">
+        ${subsetRuolo.map((blocco) => renderCardTorta(blocco.titolo, distribuzioneFrequenza(blocco.lista, (contatto) => contatto.ruolo))).join("")}
+      </div>
+    </section>
+
+    <section class="analytics-section">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Tipologia</span>
+          <h3>Distribuzioni a torta</h3>
+        </div>
+      </div>
+      <div class="analytics-grid">
+        ${subsetTipologia
+          .map((blocco) => renderCardTorta(blocco.titolo, distribuzioneFrequenza(blocco.lista, (contatto) => contatto.tipologiaContatto)))
+          .join("")}
+      </div>
+    </section>
+
+    <section class="analytics-section">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Stati pipeline</span>
+          <h3>Grafici a barre</h3>
+        </div>
+      </div>
+      <div class="analytics-grid">
+        ${renderCardBarre("Stati · Generale", distribuzioneStati(tutti))}
+        ${renderCardBarre("Stati · Contatti con offerte partner", distribuzioneStati(contattiConOffertePartner))}
+        ${renderCardBarre(
+          "Stati · Potenziali partner",
+          distribuzioneStati(tutti.filter((contatto) => contatto.tipologiaContatto === "Potenziale Partner"))
+        )}
+        ${renderCardBarre(
+          "Stati · Potenziali clienti",
+          distribuzioneStati(tutti.filter((contatto) => contatto.tipologiaContatto === "Potenziale Cliente"))
+        )}
+      </div>
+    </section>
+
+    <section class="analytics-section">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Analytics per offerta</span>
+          <h3>Breakdown dettagliato</h3>
+        </div>
+      </div>
+      <div class="offer-analytics-stack">
+        ${statoApp.offerte
+          .map((offerta) => {
+            const associati = contattiAssociatiAOfferta(offerta.id);
+            const partner = contattiPartnerPerOfferta(offerta.id);
+            const clienti = contattiClientiPerOfferta(offerta.id);
+            return `
+              <section class="offer-analytics-card">
+                <div class="section-head">
+                  <div>
+                    <span class="eyebrow">${escapeHtml(offerta.tipologia)}</span>
+                    <h3>${escapeHtml(offerta.nome)}</h3>
+                  </div>
+                  <strong>${associati.length} contatti</strong>
+                </div>
+                <div class="analytics-grid">
+                  ${renderCardTorta(`Ruolo · ${offerta.nome}`, distribuzioneFrequenza(associati, (contatto) => contatto.ruolo))}
+                  ${renderCardTorta(`Tipologia · ${offerta.nome}`, distribuzioneFrequenza(associati, (contatto) => contatto.tipologiaContatto))}
+                  ${renderCardBarre(`Stati · ${offerta.nome} · Generale`, distribuzioneStati(associati))}
+                  ${renderCardBarre(`Stati · ${offerta.nome} · Potenziali partner`, distribuzioneStati(partner))}
+                  ${renderCardBarre(`Stati · ${offerta.nome} · Potenziali clienti`, distribuzioneStati(clienti))}
+                </div>
+              </section>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
 }
 
-/* ─────────────── SUGGERIMENTI AI ─────────────── */
 async function renderSuggerimentiAi() {
   const payload = await api("/api/suggerimenti-ai");
   areaPrincipale.innerHTML = `
-    <div class="page-header">
-      <span class="eyebrow">AI Suggerimenti</span>
-      <h1>Prossime azioni</h1>
-      <p>Messaggi pronti e suggerimenti ordinati per punteggio AI e stato della pipeline.</p>
-    </div>
-    <div class="suggestions-grid">
-      ${payload.suggerimenti.map(item => `
-        <article class="suggestion-card panel-card">
-          <div class="suggestion-head">
-            <div style="display:flex;align-items:center;gap:10px">
-              <span class="avatar">${iniziali(item.nome)}</span>
-              <div>
-                <strong style="font-size:14px">${escapeHtml(item.nome)}</strong>
-                <p class="subtle text-sm" style="margin:2px 0 0">${escapeHtml(item.azienda)}</p>
+    <section class="page-header">
+      <div>
+        <span class="eyebrow">Suggerimenti AI</span>
+        <h1>Prossime azioni consigliate</h1>
+        <p>Messaggi pronti e suggerimenti ordinati per punteggio e stato della pipeline.</p>
+      </div>
+    </section>
+
+    <section class="suggestion-grid">
+      ${payload.suggerimenti
+        .map(
+          (item) => `
+            <article class="suggestion-card">
+              <div class="suggestion-head">
+                <div class="contact-cell">
+                  <span class="avatar">${iniziali(item.nome)}</span>
+                  <div class="contact-primary">
+                    <strong>${escapeHtml(item.nome)}</strong>
+                    <span>${escapeHtml(item.azienda)}</span>
+                  </div>
+                </div>
+                <div class="score-block">
+                  <strong>${item.suggerimento.punteggio}</strong>
+                  <span>AI score</span>
+                </div>
               </div>
-            </div>
-            <div class="score-block">
-              <strong>${item.suggerimento.punteggio}</strong>
-              <span>score</span>
-            </div>
-          </div>
-          <span class="pill tone-${slugStato(item.suggerimento.statoLead)}">${escapeHtml(item.suggerimento.statoLead)}</span>
-          <p style="font-weight:700;font-size:14px">${escapeHtml(item.suggerimento.prossimaAzione)}</p>
-          <p class="subtle text-sm">${escapeHtml(item.suggerimento.insight)}</p>
-          <div class="message-surface">${escapeHtml(item.suggerimento.messaggioSuggerito)}</div>
-          <div class="actions-row">
-            <button class="small-btn" data-dettaglio="${item.id}">Open</button>
-            <button class="small-btn" data-copy="${item.id}">Copy</button>
-            <button class="small-btn" data-ai="${item.id}">Refresh AI</button>
-          </div>
-        </article>`).join("")}
-    </div>`;
+              <span class="pill tone-${slugStato(item.suggerimento.statoLead)}">${escapeHtml(item.suggerimento.statoLead)}</span>
+              <h3>${escapeHtml(item.suggerimento.prossimaAzione)}</h3>
+              <p>${escapeHtml(item.suggerimento.insight)}</p>
+              <div class="message-surface">${escapeHtml(item.suggerimento.messaggioSuggerito)}</div>
+              <div class="actions-row">
+                <button class="small-btn" data-dettaglio="${item.id}">Open</button>
+                <button class="small-btn" data-copy="${item.id}">Copy</button>
+                <button class="small-btn" data-ai="${item.id}">Refresh AI</button>
+              </div>
+            </article>
+          `
+        )
+        .join("")}
+    </section>
+  `;
 
   bindDettaglioContatto();
-  document.querySelectorAll("[data-copy]").forEach(btn =>
-    btn.addEventListener("click", () => {
-      const c = trovaContatto(btn.dataset.copy);
-      if (c) copiaTesto(c.messaggioSuggerito, btn);
-    })
-  );
-  document.querySelectorAll("[data-ai]").forEach(btn =>
-    btn.addEventListener("click", e => conBottone(e.currentTarget, "Aggiorno…", () => generaSuggerimentoAi(btn.dataset.ai)))
-  );
-}
-
-/* ─────────────── ONBOARDING — WIZARD 4 STEP ─────────────── */
-
-function renderOnboarding() {
-  Object.assign(statoImport, { passo: 1, filesCaricati: [], anteprima: null, stats: null, payload: null, risultati: null });
-  areaPrincipale.innerHTML = `
-    <div class="page-header-row">
-      <div class="page-header">
-        <span class="eyebrow">Onboarding LinkedIn</span>
-        <h1>Importa la lista</h1>
-        <p>Carica il tuo export LinkedIn — AITOBUSINESS classificherà, scorerà e mapperà ogni contatto automaticamente.</p>
-      </div>
-    </div>
-    <div id="wizard-root"></div>`;
-  renderPasso();
-}
-
-function renderPasso() {
-  const root = document.getElementById("wizard-root");
-  if (!root) return;
-  const labels = ["Carica", "Anteprima", "Importa", "Completato"];
-  const stepBar = `
-    <div class="wizard-nav">
-      ${labels.map((lab, i) => {
-        const n = i + 1;
-        const cls = n < statoImport.passo ? "done" : n === statoImport.passo ? "active" : "";
-        return `
-          ${i > 0 ? '<div class="wizard-connector"></div>' : ""}
-          <div class="wizard-step ${cls}">
-            <span class="step-dot">${n < statoImport.passo ? "✓" : n}</span>
-            <span class="step-label">${lab}</span>
-          </div>`;
-      }).join("")}
-    </div>`;
-  let corpo = "";
-  if (statoImport.passo === 1) corpo = htmlPassoCarica();
-  else if (statoImport.passo === 2) corpo = htmlPassoAnteprima();
-  else if (statoImport.passo === 3) corpo = htmlPassoImportando();
-  else corpo = htmlPassoCompletato();
-  root.innerHTML = stepBar + corpo;
-  bindPasso();
-}
-
-/* ── Step 1: Carica ── */
-function htmlPassoCarica() {
-  const filesHtml = statoImport.filesCaricati.map(f => {
-    const icona = f.name.toLowerCase().endsWith(".zip") ? "🗜️" : "📄";
-    return `<div class="file-chip"><span>${icona} ${escapeHtml(f.name)}</span><span class="subtle text-xs">${(f.size/1024).toFixed(1)} KB</span></div>`;
-  }).join("");
-  return `
-    <div class="wizard-card">
-      <div class="upload-zone" id="upload-zone">
-        <div class="upload-zone-icon">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-        </div>
-        <strong>Trascina qui i file LinkedIn</strong>
-        <p class="subtle text-sm" style="margin:6px 0 14px">LinkedIn.zip · Connections.csv · messages.csv · .json</p>
-        <label class="btn" style="cursor:pointer">
-          Seleziona file
-          <input type="file" id="file-input" multiple accept=".zip,.csv,.json,.txt" style="position:absolute;opacity:0;width:0;height:0">
-        </label>
-      </div>
-
-      <div id="files-list" style="margin-top:10px">${filesHtml}</div>
-
-      <details class="guide-accordion">
-        <summary class="guide-toggle">📖 Come esportare da LinkedIn</summary>
-        <div class="guide-body">
-          <div class="steps-list">
-            <div class="step-item">1. Vai su LinkedIn → <strong>Impostazioni e privacy</strong></div>
-            <div class="step-item">2. <strong>Privacy dei dati</strong> → "Ottieni una copia dei tuoi dati"</div>
-            <div class="step-item">3. Seleziona <strong>Connections</strong> (opz. Messages) e richiedi l'export</div>
-            <div class="step-item">4. Scarica lo ZIP dalla mail, estrai i CSV e caricali qui</div>
-          </div>
-          <div class="guide-tip">💡 LinkedIn invia il file entro ~10 minuti via email</div>
-        </div>
-      </details>
-
-      <div class="wizard-actions">
-        <button class="ghost-btn" id="btn-carica-demo">Carica contatto demo</button>
-        <button class="btn" id="btn-analizza" ${statoImport.filesCaricati.length ? "" : "disabled"}>Analizza →</button>
-      </div>
-    </div>`;
-}
-
-/* ── Step 2: Anteprima ── */
-function htmlPassoAnteprima() {
-  const { anteprima, stats } = statoImport;
-  if (!anteprima || !stats) return `<div class="wizard-card"><p>Nessun dato disponibile.</p></div>`;
-  const banner = stats.trovati > 300
-    ? `<div class="info-banner">📋 Mostro i primi 300 su ${stats.trovati} trovati. Saranno importati tutti.</div>` : "";
-  return `
-    <div class="wizard-card">
-      <div class="import-stats-grid">
-        ${importStatCard(stats.trovati,      "Contatti trovati", "metric-ink")}
-        ${importStatCard(stats.nuovi,        "Nuovi",            "metric-accent")}
-        ${importStatCard(stats.duplicati,    "Già presenti",     "metric-muted")}
-        ${importStatCard(stats.conMessaggi || 0, "Con messaggi", "metric-gold")}
-        ${importStatCard(stats.conInvito   || 0, "Invitati",     "")}
-      </div>
-      ${banner}
-      <div class="table-wrap preview-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Nome</th><th>Ruolo · Azienda</th>
-              <th>Score</th><th>Msg</th><th>Stato</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${anteprima.map(c => `
-              <tr class="${c.isDuplicate ? "row-dup" : ""}">
-                <td>
-                  <div style="display:flex;align-items:center;gap:8px">
-                    <span class="avatar" style="width:28px;height:28px;font-size:10px">${iniziali(c.nome)}</span>
-                    <div>
-                      <strong style="font-size:13px">${escapeHtml(c.nome)}</strong>
-                      ${c.linkedinUrl ? `<a href="${escapeHtml(c.linkedinUrl)}" target="_blank" class="subtle text-xs" style="display:block;text-decoration:none">↗ LinkedIn</a>` : ""}
-                    </div>
-                  </div>
-                </td>
-                <td class="text-sm">
-                  <div>${escapeHtml(c.ruolo)}</div>
-                  <div class="subtle text-xs">${escapeHtml(c.azienda)}</div>
-                </td>
-                <td style="font-weight:700;color:var(--c-green)">${c.punteggioLead}</td>
-                <td class="text-sm">${c.messaggiCount > 0 ? `<span style="color:var(--c-green)">💬 ${c.messaggiCount}</span>` : `<span class="subtle">—</span>`}</td>
-                <td><span class="pill ${c.tipologiaContatto==="Potenziale Partner"?"pill-partner":"pill-cliente"}" style="font-size:10px">${c.tipologiaContatto==="Potenziale Partner"?"Partner":"Cliente"}</span></td>
-                <td>${c.isDuplicate ? '<span class="badge-dup">già presente</span>' : ""}</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>
-      <div class="wizard-actions">
-        <button class="ghost-btn" id="btn-indietro">← Indietro</button>
-        <button class="btn" id="btn-importa">Importa ${stats.nuovi} nuovi →</button>
-      </div>
-    </div>`;
-}
-
-/* ── Step 3: Importando ── */
-function htmlPassoImportando() {
-  return `
-    <div class="wizard-card wizard-center">
-      <div class="spinner" style="margin:0 auto 24px"></div>
-      <h3>Importazione in corso…</h3>
-      <p class="subtle" style="margin-top:8px">Classifico i lead, calcolo i punteggi e aggiorno la pipeline.</p>
-      <div class="progress-bar" style="margin-top:24px"><span id="barra-import" style="width:5%"></span></div>
-    </div>`;
-}
-
-/* ── Step 4: Completato ── */
-function htmlPassoCompletato() {
-  const r = statoImport.risultati || {};
-  return `
-    <div class="wizard-card wizard-center">
-      <div class="success-checkmark">✅</div>
-      <h2 style="margin:16px 0 6px">Import completato!</h2>
-      <p class="subtle">I tuoi contatti LinkedIn sono pronti nella piattaforma.</p>
-      <div class="import-stats-grid" style="margin:24px 0">
-        ${importStatCard(r.importati||0, "Importati", "metric-accent")}
-        ${importStatCard(r.totale||0, "Totale CRM", "metric-ink")}
-      </div>
-      <div class="wizard-actions" style="justify-content:center;flex-wrap:wrap">
-        <a class="btn" href="/contatti" data-link>Vai ai Contatti</a>
-        <a class="ghost-btn" href="/pipeline" data-link>Apri Pipeline</a>
-        <button class="ghost-btn" id="btn-nuovo-import">Nuovo Import</button>
-      </div>
-    </div>`;
-}
-
-function importStatCard(val, label, cls = "") {
-  return `<div class="import-stat-card ${cls}"><strong>${val}</strong><span>${label}</span></div>`;
-}
-
-/* ── Bindings per ogni step ── */
-function bindPasso() {
-  // Step 1
-  const fileInput = document.getElementById("file-input");
-  const btnAnalizza = document.getElementById("btn-analizza");
-  const uploadZone = document.getElementById("upload-zone");
-
-  fileInput?.addEventListener("change", e => {
-    statoImport.filesCaricati = Array.from(e.target.files);
-    aggiornaListaFile();
-    if (btnAnalizza) btnAnalizza.disabled = !statoImport.filesCaricati.length;
+  document.querySelectorAll("[data-copy]").forEach((bottone) => {
+    bottone.addEventListener("click", () => {
+      const contatto = trovaContatto(bottone.dataset.copy);
+      copiaTesto(contatto.messaggioSuggerito, bottone);
+    });
   });
-
-  uploadZone?.addEventListener("dragover", e => { e.preventDefault(); uploadZone.classList.add("drag-over"); });
-  uploadZone?.addEventListener("dragleave", () => uploadZone.classList.remove("drag-over"));
-  uploadZone?.addEventListener("drop", e => {
-    e.preventDefault(); uploadZone.classList.remove("drag-over");
-    const accettati = [".zip", ".csv", ".json", ".txt"];
-    statoImport.filesCaricati = Array.from(e.dataTransfer.files)
-      .filter(f => accettati.some(ext => f.name.toLowerCase().endsWith(ext)));
-    aggiornaListaFile();
-    if (btnAnalizza) btnAnalizza.disabled = !statoImport.filesCaricati.length;
+  document.querySelectorAll("[data-ai]").forEach((bottone) => {
+    bottone.addEventListener("click", (event) =>
+      conBottoneInCaricamento(event.currentTarget, "Aggiorno...", () => generaSuggerimentoAi(bottone.dataset.ai))
+    );
   });
-
-  btnAnalizza?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Analizzo…", analizzaFiles)
-  );
-
-  document.getElementById("btn-carica-demo")?.addEventListener("click", e =>
-    conBottone(e.currentTarget, "Carico…", async () => {
-      const r = await api("/api/import", { method:"POST", body: JSON.stringify({ contatti: [{
-        nome:"Sara Ferri", ruolo:"Partnership Manager", azienda:"Growth Studio",
-        localita:"Bologna, IT", settore:"Agenzia", punteggioLead:88, stato:"Contattato"
-      }] }) });
-      statoApp.contatti = r.contatti; statoApp.riepilogo = r.riepilogo;
-      aggiornaMetaSidebar();
-      mostraToast("Contatto demo importato");
-      navigate("/contatti");
-    })
-  );
-
-  // Step 2
-  document.getElementById("btn-indietro")?.addEventListener("click", () => {
-    statoImport.passo = 1; renderPasso(); bindNav();
-  });
-  document.getElementById("btn-importa")?.addEventListener("click", () => eseguiImport());
-
-  // Step 4
-  document.getElementById("btn-nuovo-import")?.addEventListener("click", () => {
-    Object.assign(statoImport, { passo:1, filesCaricati:[], anteprima:null, stats:null, payload:null, risultati:null });
-    renderPasso(); bindNav();
-  });
-
-  bindNav();
 }
 
-function aggiornaListaFile() {
-  const el = document.getElementById("files-list");
-  if (!el) return;
-  el.innerHTML = statoImport.filesCaricati.map(f => {
-    const icona = f.name.toLowerCase().endsWith(".zip") ? "🗜️" : "📄";
-    const dim   = f.size > 1024 * 1024 ? `${(f.size/1024/1024).toFixed(1)} MB` : `${(f.size/1024).toFixed(1)} KB`;
-    return `<div class="file-chip"><span>${icona} ${escapeHtml(f.name)}</span><span class="subtle text-xs">${dim}</span></div>`;
-  }).join("");
-}
-
-/* ─────────────── ZIP PARSER (puro JS, zero dipendenze) ─────────────── */
-
-// Solo i file LinkedIn che usiamo realmente (evita di estrarre reactions 1MB, ads 747KB, ecc.)
-const ZIP_FILES_UTILI = new Set([
-  "connections.csv", "messages.csv", "profile.csv",
-  "invitations.csv", "importedcontacts.csv",
-  "positions.csv", "skills.csv", "education.csv"
-]);
-
-async function decomprimi(bytes, compData, method) {
-  if (method === 0) return new TextDecoder("utf-8").decode(compData); // Stored
-  if (method !== 8) return null; // Metodo non supportato
-  const ds = new DecompressionStream("deflate-raw");
-  const writer = ds.writable.getWriter();
-  const reader = ds.readable.getReader();
-  writer.write(compData);
-  writer.close();
-  const chunks = [];
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const totLen = chunks.reduce((s, c) => s + c.length, 0);
-  const combined = new Uint8Array(totLen);
-  let off = 0;
-  for (const c of chunks) { combined.set(c, off); off += c.length; }
-  return new TextDecoder("utf-8").decode(combined);
-}
-
-async function extraiZIP(arrayBuffer) {
-  const view  = new DataView(arrayBuffer);
-  const bytes = new Uint8Array(arrayBuffer);
-  const dec   = new TextDecoder("utf-8");
-
-  // Trova EOCD (End of Central Directory) — firma 0x06054b50
-  let eocdPos = -1;
-  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65558); i--) {
-    if (view.getUint32(i, true) === 0x06054b50) { eocdPos = i; break; }
-  }
-  if (eocdPos === -1) throw new Error("File ZIP non valido o corrotto");
-
-  const numEntries = view.getUint16(eocdPos + 8, true);
-  let   cdPos      = view.getUint32(eocdPos + 16, true);
-  const files      = {};
-
-  for (let i = 0; i < numEntries; i++) {
-    if (view.getUint32(cdPos, true) !== 0x02014b50) break;
-
-    const method      = view.getUint16(cdPos + 10, true);
-    const compSize    = view.getUint32(cdPos + 20, true);
-    const fnLen       = view.getUint16(cdPos + 28, true);
-    const exLen       = view.getUint16(cdPos + 30, true);
-    const cmLen       = view.getUint16(cdPos + 32, true);
-    const localOffset = view.getUint32(cdPos + 42, true);
-    const filename    = dec.decode(bytes.slice(cdPos + 46, cdPos + 46 + fnLen));
-    cdPos += 46 + fnLen + exLen + cmLen;
-
-    const baseName = filename.split("/").pop().toLowerCase().trim();
-    if (filename.endsWith("/") || compSize === 0) continue;
-    // Estrai SOLO i file che usiamo — evita reactions/ads/searchqueries (MB inutili)
-    if (!ZIP_FILES_UTILI.has(baseName)) continue;
-
-    const localFnLen = view.getUint16(localOffset + 26, true);
-    const localExLen = view.getUint16(localOffset + 28, true);
-    const dataStart  = localOffset + 30 + localFnLen + localExLen;
-    const compData   = bytes.slice(dataStart, dataStart + compSize);
-
-    try {
-      const testo = await decomprimi(bytes, compData, method);
-      if (testo) files[baseName] = testo;
-    } catch { /* file corrotto — ignora */ }
-  }
-
-  return files;
-}
-
-/* ─────────────── PRE-AGGREGAZIONE MESSAGGI (browser) ─────────────── */
-// Converte messages.csv (3MB) in un JSON compatto (~30KB) prima di inviarlo al server
-
-function normNomeBrowser(s) {
-  return (s || "").toLowerCase().trim()
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function profiloNomeDaCSV(testo) {
-  const righe = testo.replace(/^﻿/, "").split(/\r?\n/).filter(r => r.trim());
-  if (righe.length < 2) return "";
-  // Header: First Name,Last Name,...
-  const cols = righe[0].split(",").map(c => c.toLowerCase().replace(/[" ]+/g, ""));
-  const vals = righe[1].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
-  const iF = cols.findIndex(c => c.includes("firstname"));
-  const iL = cols.findIndex(c => c.includes("lastname"));
-  return [iF >= 0 ? vals[iF] : "", iL >= 0 ? vals[iL] : ""].filter(Boolean).join(" ");
-}
-
-function aggregaMessaggiBrowser(csvText, nomeUtente) {
-  const testo  = csvText.replace(/^﻿/, "");
-  const nomeU  = normNomeBrowser(nomeUtente || "");
-  const parPos = ["interessato","voglio","fissiamo","volentieri","perfetto","ottimo","certo",
-    "assolutamente","disponibile","procediamo","sounds good","would love","interested",
-    "great","yes","sure","absolutely","grazie","quando"];
-  const parNeg = ["no grazie","non sono interessato","spam","stop","remove me",
-    "unsubscribe","not interested","no thanks"];
-
-  // Parser CSV carattere per carattere (gestisce campi multiriga come il body del messaggio)
-  let pos = 0; const len = testo.length;
-
-  function leggiCampo() {
-    if (pos >= len) return "";
-    let campo = "";
-    if (testo[pos] === '"') {
-      pos++;
-      while (pos < len) {
-        if (testo[pos] === '"') {
-          pos++;
-          if (pos < len && testo[pos] === '"') { campo += '"'; pos++; }
-          else break;
-        } else { campo += testo[pos++]; }
-      }
-    } else {
-      while (pos < len && testo[pos] !== "," && testo[pos] !== "\n" && testo[pos] !== "\r") {
-        campo += testo[pos++];
-      }
-    }
-    return campo.trim();
-  }
-
-  function leggiRiga() {
-    const row = [];
-    while (pos < len) {
-      row.push(leggiCampo());
-      if (pos < len && testo[pos] === ",") { pos++; continue; }
-      if (pos < len && testo[pos] === "\r") pos++;
-      if (pos < len && testo[pos] === "\n") { pos++; break; }
-      break;
-    }
-    return row;
-  }
-
-  // Trova header (salta eventuali righe di note prima)
-  let header = [];
-  for (let t = 0; t < 5 && pos < len; t++) {
-    const row = leggiRiga();
-    const low = row.map(f => f.toLowerCase().replace(/[\s"_\-]+/g, ""));
-    if (low.some(f => f.includes("conversationid"))) { header = low; break; }
-  }
-  if (!header.length) return [];
-
-  const ci = (name) => header.findIndex(f => f.includes(name.replace(/[\s_\-]+/g, "").toLowerCase()));
-  const iFrom    = ci("from");
-  const iFromUrl = ci("senderprofileurl");
-  const iTo      = ci("to");
-  const iToUrl   = ci("recipientprofileurls");
-  const iDate    = ci("date");
-  const iContent = ci("content");
-
-  const byUrl  = new Map();
-  const byNome = new Map();
-
-  while (pos < len) {
-    const row = leggiRiga();
-    if (!row.length || (row.length === 1 && !row[0])) continue;
-    const g = (i) => (i >= 0 && row[i]) ? row[i].trim() : "";
-
-    const from    = g(iFrom);
-    const fromUrl = g(iFromUrl);
-    const to      = g(iTo);
-    const toUrl   = g(iToUrl).split(",")[0].trim();
-    const date    = g(iDate).slice(0, 10);       // YYYY-MM-DD
-    const content = g(iContent).toLowerCase();
-
-    if (!from) continue;
-    const fromNorm   = normNomeBrowser(from);
-    const fromIsUser = nomeU && (fromNorm === nomeU ||
-      (nomeU.split(" ")[0].length > 2 && fromNorm.startsWith(nomeU.split(" ")[0])));
-
-    const otherName = fromIsUser ? to   : from;
-    const otherUrl  = fromIsUser ? toUrl : fromUrl;
-    if (!otherName) continue;
-
-    const map = otherUrl ? byUrl : byNome;
-    const key = otherUrl || normNomeBrowser(otherName);
-    if (!map.has(key)) map.set(key, { nome: otherName, url: otherUrl || "", count: 0, ultimaData: "", sentimento: "Neutro" });
-    const s = map.get(key);
-    s.count++;
-    if (date > s.ultimaData) s.ultimaData = date;
-    if (s.sentimento !== "Positivo") {
-      if (parPos.some(p => content.includes(p))) s.sentimento = "Positivo";
-      else if (parNeg.some(p => content.includes(p))) s.sentimento = "Negativo";
-    }
-  }
-
-  const result = [];
-  for (const [, s] of byUrl)  result.push({ ...s, tipoKey: "url" });
-  for (const [, s] of byNome) result.push({ ...s, tipoKey: "nome" });
-  return result;
-}
-
-async function analizzaFiles() {
-  const files = statoImport.filesCaricati;
-  if (!files.length) { mostraToast("Seleziona almeno un file"); return; }
-
-  const haZIP = files.some(f => f.name.toLowerCase().endsWith(".zip"));
-  const root  = document.getElementById("wizard-root");
-
-  const setStatus = (msg) => {
-    let el = document.getElementById("zip-status");
-    if (!el && msg) {
-      root?.insertAdjacentHTML("afterbegin",
-        `<div class="info-banner" id="zip-status" style="margin-bottom:12px">${msg}</div>`);
-    } else if (el && msg) {
-      el.textContent = msg;
-    } else if (el && !msg) {
-      el.remove();
-    }
-  };
-
-  if (haZIP) setStatus("⏳ Lettura ZIP in corso…");
-
-  const filesPayload = [];
-  const errori = [];
-
-  for (const f of files) {
-    if (f.name.toLowerCase().endsWith(".zip")) {
-      try {
-        setStatus(`🗜️ Estrazione "${f.name}"… (qualche secondo)`);
-        const buffer   = await f.arrayBuffer();
-        const estratti = await extraiZIP(buffer);
-        const trovati  = Object.entries(estratti);
-        if (!trovati.length) {
-          errori.push("Nessun file LinkedIn riconosciuto nel ZIP. Carica l'export originale di LinkedIn.");
-          continue;
-        }
-        setStatus(`📂 Estratti ${trovati.length} file — elaborazione…`);
-
-        // Separa messages.csv dagli altri per pre-aggregarlo nel browser
-        // (evita di inviare 3MB al server — Vercel ha limite 4.5MB)
-        let nomeUtente = "";
-        const profileEntry = trovati.find(([n]) => n === "profile.csv");
-        if (profileEntry) nomeUtente = profiloNomeDaCSV(profileEntry[1]);
-
-        for (const [nome, contenuto] of trovati) {
-          if (nome === "messages.csv") {
-            setStatus(`💬 Pre-elaborazione messaggi (${(contenuto.length/1024/1024).toFixed(1)} MB)…`);
-            const summary = aggregaMessaggiBrowser(contenuto, nomeUtente);
-            setStatus(`✅ ${summary.length} conversazioni analizzate`);
-            // Invia il riassunto compatto (~30KB) invece del CSV grezzo (3MB)
-            filesPayload.push({ nome: "messages_summary.json", contenuto: JSON.stringify(summary) });
-          } else {
-            filesPayload.push({ nome, contenuto });
-          }
-        }
-      } catch (e) {
-        errori.push(`Errore ZIP: ${e.message}`);
-      }
-    } else {
-      filesPayload.push({ nome: f.name, contenuto: await f.text() });
-    }
-  }
-
-  if (errori.length) { setStatus(null); mostraToast(errori[0]); return; }
-  if (!filesPayload.length) { setStatus(null); mostraToast("Nessun dato da importare"); return; }
-
-  const totaleKB = Math.round(filesPayload.reduce((s, f) => s + f.contenuto.length, 0) / 1024);
-  setStatus(`📊 Invio dati al server (${totaleKB} KB)…`);
-
-  try {
-    const res = await api("/api/import/preview", { method:"POST", body: JSON.stringify({ files: filesPayload }) });
-    setStatus(null);
-    statoImport.anteprima = res.anteprima;
-    statoImport.stats     = res.stats;
-    statoImport.payload   = res._payload;
-    statoImport.passo = 2;
-    renderPasso(); bindNav();
-  } catch(e) {
-    setStatus(null);
-    mostraToast(`Errore: ${e.message}`);
-  }
-}
-
-async function eseguiImport() {
-  statoImport.passo = 3; renderPasso();
-  const barra = document.getElementById("barra-import");
-  let p = 5;
-  const tick = setInterval(() => {
-    p = Math.min(88, p + Math.random() * 12);
-    if (barra) barra.style.width = `${p}%`;
-  }, 250);
-  try {
-    const res = await api("/api/import", { method:"POST", body: JSON.stringify({ _payload: statoImport.payload }) });
-    clearInterval(tick);
-    if (barra) barra.style.width = "100%";
-    statoApp.contatti = res.contatti; statoApp.riepilogo = res.riepilogo;
-    aggiornaMetaSidebar();
-    await new Promise(r => setTimeout(r, 400));
-    statoImport.risultati = res;
-    statoImport.passo = 4;
-    renderPasso(); bindNav();
-  } catch (e) {
-    clearInterval(tick);
-    mostraToast(`Errore: ${e.message}`);
-    statoImport.passo = 2; renderPasso();
-  }
-}
-
-/* ─────────────── ROUTING ─────────────── */
 function bindDettaglioContatto() {
-  document.querySelectorAll("[data-dettaglio]").forEach(btn =>
-    btn.addEventListener("click", () => navigate(`/contatti/${btn.dataset.dettaglio}`))
-  );
+  document.querySelectorAll("[data-dettaglio]").forEach((bottone) => {
+    bottone.addEventListener("click", () => navigate(`/contatti/${bottone.dataset.dettaglio}`));
+  });
 }
 
-function navigate(path) {
-  window.history.pushState({}, "", path);
+function navigate(pathname) {
+  window.history.pushState({}, "", pathname);
   renderRoute();
 }
 
-function bindNav() {
-  document.querySelectorAll("[data-link]").forEach(el => {
-    el.addEventListener("click", e => {
-      const href = el.getAttribute("href");
-      if (!href?.startsWith("/")) return;
-      e.preventDefault();
+function bindGlobalNavigation() {
+  document.querySelectorAll("[data-link]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      const href = link.getAttribute("href");
+      if (!href.startsWith("/")) return;
+      event.preventDefault();
       navigate(href);
     });
   });
 }
 
 async function renderRoute(contattoPreferito = null) {
+  const pathname = window.location.pathname;
   impostaMenuAttivo();
   aggiornaMetaSidebar();
-  const path = window.location.pathname;
 
-  if (path === "/") { navigate("/dashboard"); return; }
+  if (!statoApp.sessione.autenticato) {
+    pannelloAi.innerHTML = "";
+    if (pathname === "/") {
+      renderLanding();
+      bindGlobalNavigation();
+      return;
+    }
+    if (pathname === "/registrati") {
+      renderAuth("register");
+      bindGlobalNavigation();
+      return;
+    }
+    if (pathname === "/admin/login") {
+      renderAuth("admin");
+      bindGlobalNavigation();
+      return;
+    }
+    if (pathname === "/accesso") {
+      renderAuth("login");
+      bindGlobalNavigation();
+      return;
+    }
+    navigate(pathname.startsWith("/admin") ? "/admin/login" : "/accesso");
+    return;
+  }
 
-  if (path === "/dashboard") {
+  if (pathname === "/admin/login") {
+    if (utenteAdmin()) {
+      pannelloAi.innerHTML = "";
+      await renderAdminDashboard();
+    } else {
+      pannelloAi.innerHTML = "";
+      renderAuth("admin");
+    }
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/admin") {
+    if (!utenteAdmin()) {
+      navigate("/dashboard");
+      return;
+    }
+    pannelloAi.innerHTML = "";
+    await renderAdminDashboard();
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/accesso" || pathname === "/registrati") {
+    navigate("/dashboard");
+    return;
+  }
+
+  if (pathname === "/") {
+    navigate("/dashboard");
+    return;
+  }
+
+  impostaLayout("workspace");
+
+  if (!utenteAdmin() && pathname.startsWith("/admin")) {
+    navigate("/dashboard");
+    return;
+  }
+
+  if (pathname === "/dashboard") {
     renderDashboard();
     renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/contatti") {
-    renderContatti();
-    renderPannelloAi(contattoPreferito || contattiFiltrati()[0] || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/pipeline") {
-    renderPipeline();
-    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/offerte") {
-    renderOfferte();
-    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/analytics") {
-    renderAnalytics();
-    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/onboarding") {
-    renderOnboarding();
-    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
-  }
-  if (path === "/suggerimenti-ai") {
-    await renderSuggerimentiAi();
-    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
-    bindNav(); return;
+    bindGlobalNavigation();
+    return;
   }
 
-  const m = path.match(/^\/contatti\/([^/]+)$/);
-  if (m) {
-    const c = trovaContatto(m[1]);
-    await renderDettaglioContatto(contattoPreferito || c);
-    renderPannelloAi(contattoPreferito || c);
-    bindNav(); return;
+  if (pathname === "/contatti") {
+    renderContatti();
+    renderPannelloAi(contattoPreferito || contattiFiltrati()[0] || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/pipeline") {
+    renderPipeline();
+    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/offerte") {
+    renderOfferte();
+    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/analytics") {
+    renderAnalytics();
+    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/onboarding" || pathname === "/importa-linkedin") {
+    renderOnboarding();
+    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  if (pathname === "/suggerimenti-ai") {
+    await renderSuggerimentiAi();
+    renderPannelloAi(contattoPreferito || statoApp.contatti[0]);
+    bindGlobalNavigation();
+    return;
+  }
+
+  const matchDettaglio = pathname.match(/^\/contatti\/([^/]+)$/);
+  if (matchDettaglio) {
+    const contatto = trovaContatto(matchDettaglio[1]);
+    await renderDettaglioContatto(contattoPreferito || contatto);
+    renderPannelloAi(contattoPreferito || contatto);
+    bindGlobalNavigation();
+    return;
   }
 
   navigate("/dashboard");
 }
 
-/* ─────────────── AVVIO ─────────────── */
-window.addEventListener("popstate", () => renderRoute());
-
-initMobileUI();
+window.addEventListener("popstate", renderRoute);
 
 caricaDati()
   .then(renderRoute)
-  .catch(err => {
-    areaPrincipale.innerHTML = `
-      <div class="panel-card" style="margin:20px">
-        <span class="eyebrow">Errore</span>
-        <h2>Impossibile avviare AITOBUSINESS</h2>
-        <p class="subtle">${escapeHtml(err.message)}</p>
-        <p class="subtle text-sm" style="margin-top:8px">Verifica che il server sia in esecuzione con <code>node server.js</code></p>
-      </div>`;
+  .catch((errore) => {
+    areaPrincipale.innerHTML = `<section class="panel-card"><h1>Errore applicazione</h1><p>${escapeHtml(errore.message)}</p></section>`;
   });

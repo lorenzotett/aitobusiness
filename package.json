@@ -4,6 +4,7 @@
   "private": true,
   "description": "Zero-dependency MVP prototype for Aito Business.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/importazioni-linkedin.test.js"
   }
 }

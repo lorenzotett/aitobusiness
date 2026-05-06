@@ -1,1 +1,8 @@
-.vercel
+data/aito.sqlite
+data/aito.sqlite-shm
+data/aito.sqlite-wal
+data/.app-secret
+data/tmp/
+server.out.log
+server.err.log
+node_modules/
